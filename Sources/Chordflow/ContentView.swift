@@ -67,19 +67,28 @@ struct ContentView: View {
     }
 
     private func sceneToolbar(_ selectedScore: Score, scene: ScoreScene) -> some View {
-        HStack(spacing: 10) {
-            TextField("Partiturtitel", text: Binding<String>(get: { selectedScore.title }, set: { library.updateScoreTitle($0) })).font(.headline).textFieldStyle(.roundedBorder).frame(width: 190)
-            Picker("Szene", selection: Binding<Int64?>(get: { library.selectedSceneID }, set: { library.selectScene($0) })) {
-                ForEach(library.scenes) { item in Text(item.title).tag(Optional(item.id)) }
-            }.frame(width: 150)
-            Button("Szene hinzufügen", systemImage: "plus") { library.addScene() }.labelStyle(.iconOnly)
-            Picker("Grundton", selection: Binding(get: { scene.tonic }, set: { var changed = scene; changed.tonic = $0; library.updateScene(changed) })) {
-                ForEach(0..<12, id: \.self) { Text(MusicTheory.noteName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))).tag($0) }
-            }.frame(width: 120)
-            Picker("Tonleiter", selection: Binding(get: { scene.scale }, set: { var changed = scene; changed.scale = $0; library.updateScene(changed) })) {
-                ForEach(ScaleKind.allCases) { Text($0.title).tag($0) }
-            }.frame(width: 180)
-            Picker("Bereich", selection: $workspaceMode) { ForEach(WorkspaceMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 480)
+        VStack(spacing: 7) {
+            HStack(spacing: 10) {
+                TextField("Partiturtitel", text: Binding<String>(get: { selectedScore.title }, set: { library.updateScoreTitle($0) })).font(.headline).textFieldStyle(.roundedBorder).frame(width: 220)
+                Picker("Szene", selection: Binding<Int64?>(get: { library.selectedSceneID }, set: { library.selectScene($0) })) {
+                    ForEach(library.scenes) { item in Text(item.title).tag(Optional(item.id)) }
+                }.frame(width: 160)
+                Button("Szene hinzufügen", systemImage: "plus") { library.addScene() }.labelStyle(.iconOnly)
+                Stepper("\(scene.tempo) BPM", value: Binding(get: { scene.tempo }, set: { var changed = scene; changed.tempo = $0; library.updateScene(changed) }), in: 20...400).frame(width: 145)
+                Spacer(minLength: 8)
+                Picker("Bereich", selection: $workspaceMode) { ForEach(WorkspaceMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 520)
+            }
+            HStack(spacing: 12) {
+                Label("Harmonie", systemImage: "music.quarternote.3").font(.callout.weight(.semibold)).foregroundStyle(.secondary)
+                Picker("Grundton", selection: Binding(get: { scene.tonic }, set: { var changed = scene; changed.tonic = $0; library.updateScene(changed) })) {
+                    ForEach(0..<12, id: \.self) { Text(MusicTheory.noteName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))).tag($0) }
+                }.frame(width: 130)
+                Picker("Tonleiter", selection: Binding(get: { scene.scale }, set: { var changed = scene; changed.scale = $0; library.updateScene(changed) })) {
+                    ForEach(ScaleKind.allCases) { Text($0.title).tag($0) }
+                }.frame(width: 210)
+                Text(MusicTheory.scaleNames(tonic: scene.tonic, kind: scene.scale).joined(separator: " · ")).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -88,16 +97,7 @@ struct ContentView: View {
 
     private func editor(_ selectedScore: Score, scene selectedScene: ScoreScene) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Picker("Szene", selection: Binding<Int64?>(get: { library.selectedSceneID }, set: { library.selectScene($0) })) {
-                    ForEach(library.scenes) { scene in Text(scene.title).tag(Optional(scene.id)) }
-                }
-                Button("Szene hinzufügen", systemImage: "plus") { library.addScene() }.labelStyle(.iconOnly)
-                Stepper("\(selectedScene.tempo) BPM", value: Binding(
-                    get: { selectedScene.tempo },
-                    set: { library.updateScene(ScoreScene(id: selectedScene.id, scoreID: selectedScene.scoreID, title: selectedScene.title, tempo: $0, position: selectedScene.position, tonic: selectedScene.tonic, scale: selectedScene.scale)) }
-                ), in: 20...400).frame(width: 150)
-            }
+            Text("Spuren für \(selectedScene.title)").font(.title2.bold())
             TextField("Szenenname", text: Binding(
                 get: { selectedScene.title },
                 set: { library.updateScene(ScoreScene(id: selectedScene.id, scoreID: selectedScene.scoreID, title: $0, tempo: selectedScene.tempo, position: selectedScene.position, tonic: selectedScene.tonic, scale: selectedScene.scale)) }

@@ -93,6 +93,14 @@ enum MusicTheory {
     static func scale(tonic: Int, kind: ScaleKind) -> [Int] { kind.intervals.map { normalized(tonic + $0) } }
     static func scaleNames(tonic: Int, kind: ScaleKind) -> [String] { scale(tonic: tonic, kind: kind).map { noteName($0, prefersFlats: prefersFlats(tonic: tonic)) } }
     static func contains(_ pitch: Int, tonic: Int, kind: ScaleKind) -> Bool { scale(tonic: tonic, kind: kind).contains(normalized(pitch)) }
+    static func nearestScalePitch(to pitch: Int, tonic: Int, kind: ScaleKind) -> Int {
+        guard !contains(pitch, tonic: tonic, kind: kind) else { return pitch }
+        for distance in 1...6 {
+            if contains(pitch - distance, tonic: tonic, kind: kind) { return pitch - distance }
+            if contains(pitch + distance, tonic: tonic, kind: kind) { return pitch + distance }
+        }
+        return pitch
+    }
     static func prefersFlats(tonic: Int) -> Bool { [1, 3, 5, 8, 10].contains(normalized(tonic)) }
     static func intervalName(_ semitones: Int) -> String { [0:"1",1:"♭2",2:"2",3:"♭3",4:"3",5:"4",6:"♭5",7:"5",8:"♭6",9:"6",10:"♭7",11:"7"][normalized(semitones)] ?? "?" }
     static func romanDegree(root: Int, tonic: Int, kind: ScaleKind) -> String? {

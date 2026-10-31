@@ -142,6 +142,15 @@ final class ScoreDatabase {
     }
     func deleteChord(id: Int64) throws { try run("DELETE FROM chord_events WHERE id = ?", binds: [.integer(id)]) }
     func reorderChords(_ ids: [Int64]) throws { try transaction { for (position, id) in ids.enumerated() { try run("UPDATE chord_events SET position = ? WHERE id = ?", binds: [.integer(Int64(position)), .integer(id)]) } } }
+    func transposeChords(sceneID: Int64, semitones: Int) throws {
+        try transaction {
+            for var event in try chordEvents(sceneID: sceneID) {
+                event.root = MusicTheory.normalized(event.root + semitones)
+                event.pitches = event.pitches.map { $0 + semitones }
+                try updateChord(event)
+            }
+        }
+    }
 
     private func addDefaultTracks(sceneID: Int64) throws {
         for (position, name) in ScoreDefaults.trackNames.enumerated() {
@@ -207,6 +216,16 @@ final class ScoreDatabase {
     func updateTrack(_ track: ScoreTrack) { guard let scoreID = selectedScoreID else { return }; perform("Spur konnte nicht gespeichert werden") { try $0.updateTrack(track, scoreID: scoreID); if let index = tracks.firstIndex(where: { $0.id == track.id }) { tracks[index] = track } } }
     func addChord(_ chord: TheoryChord) { guard let sceneID = selectedSceneID else { return }; perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord); chordEvents = try $0.chordEvents(sceneID: sceneID) } }
     func updateChord(_ event: ChordEvent) { perform("Akkord konnte nicht gespeichert werden") { try $0.updateChord(event); if let index = chordEvents.firstIndex(where: { $0.id == event.id }) { chordEvents[index] = event } } }
+    func replaceChord(id: Int64, with chord: TheoryChord) {
+        guard var event = chordEvents.first(where: { $0.id == id }) else { return }
+        event.root = chord.root; event.quality = chord.quality; event.pitches = chord.pitches
+        updateChord(event)
+    }
+    func transposeChordProgression(from oldTonic: Int, to newTonic: Int) {
+        guard let sceneID = selectedSceneID else { return }
+        let semitones = MusicTheory.normalized(newTonic - oldTonic)
+        perform("Akkordfolge konnte nicht transponiert werden") { try $0.transposeChords(sceneID: sceneID, semitones: semitones); chordEvents = try $0.chordEvents(sceneID: sceneID) }
+    }
     func deleteChord(_ id: Int64) { guard let sceneID = selectedSceneID else { return }; perform("Akkord konnte nicht gelöscht werden") { try $0.deleteChord(id: id); chordEvents = try $0.chordEvents(sceneID: sceneID) } }
     func moveChord(_ sourceID: Int64, before targetID: Int64) {
         guard sourceID != targetID, let source = chordEvents.firstIndex(where: { $0.id == sourceID }), let target = chordEvents.firstIndex(where: { $0.id == targetID }) else { return }
@@ -223,13 +242,19 @@ final class ScoreDatabase {
 enum ABCScoreBuilder {
     static func build(score: Score, scene: ScoreScene, tracks: [ScoreTrack], chords: [ChordEvent] = []) -> String {
         let voices = tracks.enumerated().map { index, track in
-            let content = track.name == "Akkorde" && !chords.isEmpty ? chordABC(chords) : track.abc
+            let content: String
+            if !chords.isEmpty && track.name == "Akkorde" { content = chordABC(chords) }
+            else if !chords.isEmpty && track.name == "Bass" { content = bassABC(chords) }
+            else { content = track.abc }
             return "V:v\(index + 1) name=\"\(escaped(track.name))\"\n\(content)"
         }.joined(separator: "\n")
         return "X:1\nT:\(score.title) – \(scene.title)\nM:4/4\nL:1/4\nQ:1/4=\(scene.tempo)\nK:\(MusicTheory.abcKey(tonic: scene.tonic, kind: scene.scale))\n%%score { \(tracks.indices.map { "v\($0 + 1)" }.joined(separator: " ")) }\n\(voices)"
     }
     private static func chordABC(_ events: [ChordEvent]) -> String {
         events.map { event in "\"\(event.chord.symbol)\"[\(event.pitches.map(MusicTheory.abcNote).joined())]\(event.beats) |" }.joined(separator: " ")
+    }
+    private static func bassABC(_ events: [ChordEvent]) -> String {
+        events.map { event in "\(MusicTheory.abcNote(36 + event.root))\(event.beats) |" }.joined(separator: " ")
     }
     private static func escaped(_ value: String) -> String { value.replacingOccurrences(of: "\"", with: "'") }
 }

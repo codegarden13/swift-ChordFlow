@@ -15,6 +15,9 @@ struct TheoryWorkspaceView: View {
     @State private var root = 0
     @State private var quality = ChordQuality.major
     @State private var pitches = TheoryChord(root: 0, quality: .major).pitches
+    @State private var editedChordID: Int64?
+    @State private var snapsToScale = true
+    @State private var pendingTonic: Int?
 
     private var chord: TheoryChord { TheoryChord(root: root, quality: quality, pitches: pitches) }
 
@@ -28,8 +31,6 @@ struct TheoryWorkspaceView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onChange(of: root) { _, _ in resetVoicing() }
-        .onChange(of: quality) { _, _ in resetVoicing() }
     }
 
     private var arrangement: some View {
@@ -56,7 +57,7 @@ struct TheoryWorkspaceView: View {
                 Spacer()
                 Button("Löschen", systemImage: "xmark.circle", role: .destructive) { library.deleteChord(event.id) }.labelStyle(.iconOnly).buttonStyle(.plain)
             }
-            Text(MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale) ?? "leiterfremd").font(.headline).foregroundStyle(MusicTheory.contains(event.root, tonic: scene.tonic, kind: scene.scale) ? .blue : .orange)
+            Text(MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale) ?? "leiterfremd").font(.headline).foregroundStyle(functionColor(event.root))
             Text(event.pitches.map { MusicTheory.pitchName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)) }.joined(separator: " · ")).font(.caption.monospaced())
             Stepper("\(event.beats) Zählzeiten", value: Binding(get: { event.beats }, set: { value in
                 var changed = event; changed.beats = value; library.updateChord(changed)
@@ -76,21 +77,39 @@ struct TheoryWorkspaceView: View {
                 HStack {
                     Text("Akkordlabor").font(.title2.bold())
                     Spacer()
-                    Button("In Szene einfügen", systemImage: "plus") { library.addChord(chord) }.buttonStyle(.borderedProminent)
+                    Picker("Ziel", selection: $editedChordID) {
+                        Text("Neuer Akkord").tag(Optional<Int64>.none)
+                        ForEach(library.chordEvents) { Text("\($0.position + 1): \($0.chord.symbol)").tag(Optional($0.id)) }
+                    }.frame(width: 180)
+                    Button(editedChordID == nil ? "In Szene einfügen" : "Akkord ersetzen", systemImage: editedChordID == nil ? "plus" : "arrow.triangle.2.circlepath") {
+                        if let editedChordID { library.replaceChord(id: editedChordID, with: chord) } else { library.addChord(chord) }
+                    }.buttonStyle(.borderedProminent)
                 }
                 HStack {
-                    Picker("Grundton", selection: $root) { ForEach(0..<12, id: \.self) { Text(MusicTheory.noteName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))).tag($0) } }.frame(width: 150)
-                    Picker("Akkord", selection: $quality) { ForEach(ChordQuality.allCases) { Text($0.title).tag($0) } }.frame(width: 220)
+                    Picker("Grundton", selection: Binding(get: { root }, set: { root = $0; resetVoicing() })) { ForEach(0..<12, id: \.self) { Text(MusicTheory.noteName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))).tag($0) } }.frame(maxWidth: 180)
+                    Picker("Akkord", selection: Binding(get: { quality }, set: { quality = $0; resetVoicing() })) { ForEach(ChordQuality.allCases) { Text($0.title).tag($0) } }.frame(maxWidth: 240)
+                    Spacer()
+                }
+                HStack {
                     Button("Umkehrung ↑") { invert(up: true) }
                     Button("Umkehrung ↓") { invert(up: false) }
+                    Toggle("Auf Tonleiter einrasten", isOn: $snapsToScale).toggleStyle(.switch)
+                    Spacer()
                 }
-                HStack(alignment: .top, spacing: 18) {
-                    ChordNoteCanvas(pitches: pitches, tonic: scene.tonic, scale: scene.scale) { index, pitch in pitches[index] = pitch; pitches.sort() }
-                    chordExplanation
+                ChordNoteCanvas(pitches: pitches, tonic: scene.tonic, scale: scene.scale) { index, pitch in
+                    pitches[index] = snapsToScale ? MusicTheory.nearestScalePitch(to: pitch, tonic: scene.tonic, kind: scene.scale) : pitch
+                    pitches.sort()
                 }
-                PianoView(pitches: pitches, scale: Set(MusicTheory.scale(tonic: scene.tonic, kind: scene.scale)), tonic: scene.tonic)
+                chordExplanation
+                ScrollView(.horizontal, showsIndicators: true) {
+                    PianoView(pitches: pitches, scale: Set(MusicTheory.scale(tonic: scene.tonic, kind: scene.scale)), tonic: scene.tonic)
+                }
                 Text("Ziehe einen Notenkopf im Notenfeld nach oben oder unten. Er rastet chromatisch auf der nächstgelegenen Tonhöhe ein.").font(.caption).foregroundStyle(.secondary)
             }.padding(18)
+        }
+        .onChange(of: editedChordID) { _, id in
+            guard let event = library.chordEvents.first(where: { $0.id == id }) else { return }
+            root = event.root; quality = event.quality; pitches = event.pitches
         }
     }
 
@@ -107,32 +126,69 @@ struct TheoryWorkspaceView: View {
     }
 
     private var circle: some View {
-        HStack(spacing: 30) {
-            CircleOfFifthsView(tonic: scene.tonic) { newTonic in
-                var changed = scene; changed.tonic = newTonic; library.updateScene(changed)
-            }.frame(width: 440, height: 440)
+        ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("\(MusicTheory.noteName(scene.tonic, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))) \(scene.scale.title)").font(.largeTitle.bold())
-                Text(MusicTheory.scaleNames(tonic: scene.tonic, kind: scene.scale).joined(separator: " – ")).font(.title3)
-                Text("Klicke eine Tonart im Kreis. Die Szene übernimmt das tonale Zentrum; vorhandene Noten werden dabei nicht ungefragt transponiert.").foregroundStyle(.secondary)
-                Divider()
-                Text("Verwandte Funktionen").font(.headline)
-                LabeledContent("Dominante", value: MusicTheory.noteName(scene.tonic + 7))
-                LabeledContent("Subdominante", value: MusicTheory.noteName(scene.tonic + 5))
-                LabeledContent("Paralleltonart", value: MusicTheory.noteName(scene.tonic + (scene.scale == .major ? 9 : 3)) + (scene.scale == .major ? " Moll" : " Dur"))
-            }.frame(maxWidth: 420)
-            Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(MusicTheory.noteName(scene.tonic, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))) \(scene.scale.title)").font(.title2.bold())
+                    Text(MusicTheory.scaleNames(tonic: scene.tonic, kind: scene.scale).joined(separator: " – ")).font(.headline)
+                    Text(learningText).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .frame(maxWidth: 560, alignment: .leading)
+                .background(functionColor(scene.tonic).opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                CircleOfFifthsView(tonic: scene.tonic) { newTonic in
+                    pendingTonic = newTonic
+                }.frame(width: 440, height: 440)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Verwandte Funktionen").font(.headline)
+                    HStack(spacing: 10) {
+                        theoryValue("Dominante", MusicTheory.noteName(scene.tonic + 7), color: .orange)
+                        theoryValue("Subdominante", MusicTheory.noteName(scene.tonic + 5), color: .purple)
+                        theoryValue("Paralleltonart", MusicTheory.noteName(scene.tonic + (scene.scale == .major ? 9 : 3)) + (scene.scale == .major ? " Moll" : " Dur"), color: .blue)
+                    }
+                    Text("Klicke eine Tonart im Kreis und entscheide anschließend, ob nur die Analyse oder auch die Akkordfolge geändert werden soll.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }.frame(maxWidth: 560, alignment: .leading)
+            }
+            .padding(.leading, 8)
+            .padding(.vertical, 12)
         }
-        .padding(.leading, 4)
-        .padding(.top, 12)
-        .padding(.trailing, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .confirmationDialog("Tonart wechseln", isPresented: Binding(get: { pendingTonic != nil }, set: { if !$0 { pendingTonic = nil } }), titleVisibility: .visible) {
+            if let newTonic = pendingTonic {
+                Button("Nur Analyse auf \(MusicTheory.noteName(newTonic)) ändern") { changeTonic(to: newTonic, transposesChords: false) }
+                Button("Akkordfolge nach \(MusicTheory.noteName(newTonic)) transponieren") { changeTonic(to: newTonic, transposesChords: true) }
+            }
+            Button("Abbrechen", role: .cancel) { pendingTonic = nil }
+        } message: {
+            Text("Die kontrollierte Transposition verändert die gespeicherten Akkorde und die daraus erzeugte Bassspur. Frei eingegebene Melodien bleiben unverändert.")
+        }
     }
 
     private func resetVoicing() { pitches = TheoryChord(root: root, quality: quality).pitches }
     private func invert(up: Bool) {
         guard !pitches.isEmpty else { return }
         if up { pitches[0] += 12; pitches.sort() } else { pitches[pitches.count - 1] -= 12; pitches.sort() }
+    }
+    private func changeTonic(to newTonic: Int, transposesChords: Bool) {
+        if transposesChords { library.transposeChordProgression(from: scene.tonic, to: newTonic) }
+        var changed = scene; changed.tonic = newTonic; library.updateScene(changed); pendingTonic = nil
+    }
+    private func functionColor(_ chordRoot: Int) -> Color {
+        switch MusicTheory.normalized(chordRoot - scene.tonic) {
+        case 0, 3, 4, 8, 9: .blue
+        case 5, 2: .purple
+        case 7, 11: .orange
+        default: .red
+        }
+    }
+    private var learningText: String {
+        "Die Tonika \(MusicTheory.noteName(scene.tonic)) vermittelt Ruhe. Die Dominante \(MusicTheory.noteName(scene.tonic + 7)) erzeugt Spannung und führt zurück zur Tonika; die Subdominante \(MusicTheory.noteName(scene.tonic + 5)) öffnet die Bewegung von ihr weg."
+    }
+    private func theoryValue(_ title: String, _ value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.headline)
+        }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
     }
 }
 

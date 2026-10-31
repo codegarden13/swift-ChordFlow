@@ -67,6 +67,35 @@ final class ChordflowTests: XCTestCase {
         XCTAssertEqual(try database.tracks(sceneID: scene.id).first?.scaleOverride, .minorPentatonic)
     }
 
+    func testScaleSnappingUsesNearestLowerToneOnTie() {
+        XCTAssertEqual(MusicTheory.nearestScalePitch(to: 61, tonic: 0, kind: .major), 60)
+        XCTAssertEqual(MusicTheory.nearestScalePitch(to: 66, tonic: 0, kind: .major), 65)
+        XCTAssertEqual(MusicTheory.nearestScalePitch(to: 64, tonic: 0, kind: .major), 64)
+    }
+
+    func testChordProgressionGeneratesChordAndBassVoices() throws {
+        let score = Score(id: 1, title: "Set")
+        let scene = ScoreScene(id: 2, scoreID: 1, title: "Intro", tempo: 120, position: 0)
+        let tracks = ScoreDefaults.trackNames.enumerated().map { ScoreTrack(id: Int64($0.offset), sceneID: 2, name: $0.element, abc: ScoreDefaults.trackABC[$0.offset], position: $0.offset) }
+        let event = ChordEvent(id: 1, sceneID: 2, position: 0, root: 0, quality: .major, pitches: [60, 64, 67], beats: 4)
+        let abc = ABCScoreBuilder.build(score: score, scene: scene, tracks: tracks, chords: [event])
+        XCTAssertTrue(abc.contains("\"C\"[CEG]4 |"))
+        XCTAssertTrue(abc.contains("C,,4 |"))
+    }
+
+    func testControlledChordTranspositionPreservesIntervals() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let scoreID = try database.createScore()
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        _ = try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 0, quality: .major7))
+        try database.transposeChords(sceneID: scene.id, semitones: 2)
+        let transposed = try XCTUnwrap(database.chordEvents(sceneID: scene.id).first)
+        XCTAssertEqual(transposed.chord.symbol, "Dmaj7")
+        XCTAssertEqual(transposed.pitches, [62, 66, 69, 73])
+    }
+
     func testParserReadsRunningStatus() {
         XCTAssertEqual(MIDIMessageParser.messages(in: [0x91, 60, 100, 64, 90, 60, 0]), [.noteOn(60, 100, 1), .noteOn(64, 90, 1), .noteOff(60, 1)])
     }
