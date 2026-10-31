@@ -1,0 +1,4 @@
+.build/
+*_changes.md
+.DS_Store
+AGENTS.md
