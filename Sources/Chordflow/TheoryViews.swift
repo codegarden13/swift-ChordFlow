@@ -27,6 +27,7 @@ struct TheoryWorkspaceView: View {
             case .tracks: EmptyView()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onChange(of: root) { _, _ in resetVoicing() }
         .onChange(of: quality) { _, _ in resetVoicing() }
     }
@@ -120,7 +121,12 @@ struct TheoryWorkspaceView: View {
                 LabeledContent("Subdominante", value: MusicTheory.noteName(scene.tonic + 5))
                 LabeledContent("Paralleltonart", value: MusicTheory.noteName(scene.tonic + (scene.scale == .major ? 9 : 3)) + (scene.scale == .major ? " Moll" : " Dur"))
             }.frame(maxWidth: 420)
-        }.padding(24)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 4)
+        .padding(.top, 12)
+        .padding(.trailing, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func resetVoicing() { pitches = TheoryChord(root: root, quality: quality).pitches }

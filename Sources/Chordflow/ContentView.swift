@@ -19,6 +19,7 @@ struct ContentView: View {
                 ContentUnavailableView("Noch keine Partitur", systemImage: "music.note.list", description: Text("Lege links eine Partitur für dein Live-Set an."))
             }
         }
+        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1_100, minHeight: 700)
         .onAppear { midi.start() }
         .onDisappear { midi.deactivate(sessionID) }
@@ -47,7 +48,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderless).padding(10)
         }
-        .navigationSplitViewColumnWidth(min: 210, ideal: 260)
+        .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
     }
 
     private func workspace(_ selectedScore: Score, scene selectedScene: ScoreScene) -> some View {
@@ -62,10 +63,11 @@ struct ContentView: View {
                 preview(selectedScore, scene: selectedScene).frame(minWidth: 520)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func sceneToolbar(_ selectedScore: Score, scene: ScoreScene) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             TextField("Partiturtitel", text: Binding<String>(get: { selectedScore.title }, set: { library.updateScoreTitle($0) })).font(.headline).textFieldStyle(.roundedBorder).frame(width: 190)
             Picker("Szene", selection: Binding<Int64?>(get: { library.selectedSceneID }, set: { library.selectScene($0) })) {
                 ForEach(library.scenes) { item in Text(item.title).tag(Optional(item.id)) }
@@ -78,7 +80,10 @@ struct ContentView: View {
                 ForEach(ScaleKind.allCases) { Text($0.title).tag($0) }
             }.frame(width: 180)
             Picker("Bereich", selection: $workspaceMode) { ForEach(WorkspaceMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 480)
-        }.padding(10)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func editor(_ selectedScore: Score, scene selectedScene: ScoreScene) -> some View {
