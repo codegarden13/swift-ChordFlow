@@ -33,6 +33,40 @@ final class ChordflowTests: XCTestCase {
         XCTAssertEqual(abc.components(separatedBy: "V:v").count - 1, 3)
     }
 
+    func testScaleAndChordTheory() {
+        XCTAssertEqual(MusicTheory.scaleNames(tonic: 0, kind: .major), ["C", "D", "E", "F", "G", "A", "H"])
+        XCTAssertEqual(MusicTheory.scaleNames(tonic: 9, kind: .naturalMinor), ["A", "H", "C", "D", "E", "F", "G"])
+        let chord = TheoryChord(root: 0, quality: .major7)
+        XCTAssertEqual(chord.symbol, "Cmaj7")
+        XCTAssertEqual(chord.intervalLabels, ["1", "3", "5", "7"])
+    }
+
+    func testChordEventsPersistAndDriveABCChordTrack() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let scoreID = try database.createScore(title: "Theorie")
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        _ = try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 7, quality: .dominant7))
+        let events = try database.chordEvents(sceneID: scene.id)
+        XCTAssertEqual(events.first?.chord.symbol, "G7")
+        let abc = ABCScoreBuilder.build(score: Score(id: scoreID, title: "Theorie"), scene: scene, tracks: try database.tracks(sceneID: scene.id), chords: events)
+        XCTAssertTrue(abc.contains("\"G7\"[GBdf]4 |"))
+    }
+
+    func testSceneAndTrackScaleChoicesPersist() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let scoreID = try database.createScore()
+        var scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        scene.tonic = 2; scene.scale = .dorian; try database.updateScene(scene)
+        var track = try XCTUnwrap(database.tracks(sceneID: scene.id).first)
+        track.scaleOverride = .minorPentatonic; try database.updateTrack(track, scoreID: scoreID)
+        XCTAssertEqual(try database.scenes(scoreID: scoreID).first?.scale, .dorian)
+        XCTAssertEqual(try database.tracks(sceneID: scene.id).first?.scaleOverride, .minorPentatonic)
+    }
+
     func testParserReadsRunningStatus() {
         XCTAssertEqual(MIDIMessageParser.messages(in: [0x91, 60, 100, 64, 90, 60, 0]), [.noteOn(60, 100, 1), .noteOn(64, 90, 1), .noteOff(60, 1)])
     }

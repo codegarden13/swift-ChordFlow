@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var scoreHeight: CGFloat = 360
     @State private var measure = 0
     @State private var sessionID = UUID()
+    @State private var workspaceMode = WorkspaceMode.arrangement
 
     var body: some View {
         NavigationSplitView {
@@ -50,15 +51,38 @@ struct ContentView: View {
     }
 
     private func workspace(_ selectedScore: Score, scene selectedScene: ScoreScene) -> some View {
-        HSplitView {
-            editor(selectedScore, scene: selectedScene).frame(minWidth: 390, idealWidth: 460)
-            preview(selectedScore, scene: selectedScene).frame(minWidth: 580)
+        VStack(spacing: 0) {
+            sceneToolbar(selectedScore, scene: selectedScene)
+            Divider()
+            HSplitView {
+                Group {
+                    if workspaceMode == .tracks { editor(selectedScore, scene: selectedScene) }
+                    else { TheoryWorkspaceView(library: library, scene: selectedScene, mode: workspaceMode) }
+                }.frame(minWidth: 480, idealWidth: 650)
+                preview(selectedScore, scene: selectedScene).frame(minWidth: 520)
+            }
         }
+    }
+
+    private func sceneToolbar(_ selectedScore: Score, scene: ScoreScene) -> some View {
+        HStack(spacing: 12) {
+            TextField("Partiturtitel", text: Binding<String>(get: { selectedScore.title }, set: { library.updateScoreTitle($0) })).font(.headline).textFieldStyle(.roundedBorder).frame(width: 190)
+            Picker("Szene", selection: Binding<Int64?>(get: { library.selectedSceneID }, set: { library.selectScene($0) })) {
+                ForEach(library.scenes) { item in Text(item.title).tag(Optional(item.id)) }
+            }.frame(width: 150)
+            Button("Szene hinzufügen", systemImage: "plus") { library.addScene() }.labelStyle(.iconOnly)
+            Picker("Grundton", selection: Binding(get: { scene.tonic }, set: { var changed = scene; changed.tonic = $0; library.updateScene(changed) })) {
+                ForEach(0..<12, id: \.self) { Text(MusicTheory.noteName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))).tag($0) }
+            }.frame(width: 120)
+            Picker("Tonleiter", selection: Binding(get: { scene.scale }, set: { var changed = scene; changed.scale = $0; library.updateScene(changed) })) {
+                ForEach(ScaleKind.allCases) { Text($0.title).tag($0) }
+            }.frame(width: 180)
+            Picker("Bereich", selection: $workspaceMode) { ForEach(WorkspaceMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 480)
+        }.padding(10)
     }
 
     private func editor(_ selectedScore: Score, scene selectedScene: ScoreScene) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("Partiturtitel", text: Binding<String>(get: { selectedScore.title }, set: { library.updateScoreTitle($0) })).font(.title2.weight(.semibold)).textFieldStyle(.roundedBorder)
             HStack {
                 Picker("Szene", selection: Binding<Int64?>(get: { library.selectedSceneID }, set: { library.selectScene($0) })) {
                     ForEach(library.scenes) { scene in Text(scene.title).tag(Optional(scene.id)) }
@@ -66,12 +90,12 @@ struct ContentView: View {
                 Button("Szene hinzufügen", systemImage: "plus") { library.addScene() }.labelStyle(.iconOnly)
                 Stepper("\(selectedScene.tempo) BPM", value: Binding(
                     get: { selectedScene.tempo },
-                    set: { library.updateScene(ScoreScene(id: selectedScene.id, scoreID: selectedScene.scoreID, title: selectedScene.title, tempo: $0, position: selectedScene.position)) }
+                    set: { library.updateScene(ScoreScene(id: selectedScene.id, scoreID: selectedScene.scoreID, title: selectedScene.title, tempo: $0, position: selectedScene.position, tonic: selectedScene.tonic, scale: selectedScene.scale)) }
                 ), in: 20...400).frame(width: 150)
             }
             TextField("Szenenname", text: Binding(
                 get: { selectedScene.title },
-                set: { library.updateScene(ScoreScene(id: selectedScene.id, scoreID: selectedScene.scoreID, title: $0, tempo: selectedScene.tempo, position: selectedScene.position)) }
+                set: { library.updateScene(ScoreScene(id: selectedScene.id, scoreID: selectedScene.scoreID, title: $0, tempo: selectedScene.tempo, position: selectedScene.position, tonic: selectedScene.tonic, scale: selectedScene.scale)) }
             ))
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) { ForEach(library.tracks) { track in trackEditor(track) } }
@@ -83,11 +107,19 @@ struct ContentView: View {
 
     private func trackEditor(_ track: ScoreTrack) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            TextField("Spurname", text: Binding(get: { track.name }, set: {
-                library.updateTrack(ScoreTrack(id: track.id, sceneID: track.sceneID, name: $0, abc: track.abc, position: track.position))
-            })).font(.headline)
+            HStack {
+                TextField("Spurname", text: Binding(get: { track.name }, set: {
+                    library.updateTrack(ScoreTrack(id: track.id, sceneID: track.sceneID, name: $0, abc: track.abc, position: track.position, scaleOverride: track.scaleOverride))
+                })).font(.headline)
+                Picker("Tonleiter", selection: Binding<String>(get: { track.scaleOverride?.rawValue ?? "scene" }, set: { value in
+                    library.updateTrack(ScoreTrack(id: track.id, sceneID: track.sceneID, name: track.name, abc: track.abc, position: track.position, scaleOverride: ScaleKind(rawValue: value)))
+                })) {
+                    Text("Wie Szene").tag("scene")
+                    ForEach(ScaleKind.allCases) { Text($0.title).tag($0.rawValue) }
+                }.frame(width: 180)
+            }
             TextEditor(text: Binding(get: { track.abc }, set: {
-                library.updateTrack(ScoreTrack(id: track.id, sceneID: track.sceneID, name: track.name, abc: $0, position: track.position))
+                library.updateTrack(ScoreTrack(id: track.id, sceneID: track.sceneID, name: track.name, abc: $0, position: track.position, scaleOverride: track.scaleOverride))
             }))
             .font(.system(.body, design: .monospaced)).frame(minHeight: 84).scrollContentBackground(.hidden).padding(6)
             .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
@@ -95,7 +127,7 @@ struct ContentView: View {
     }
 
     private func preview(_ selectedScore: Score, scene selectedScene: ScoreScene) -> some View {
-        let abc = ABCScoreBuilder.build(score: selectedScore, scene: selectedScene, tracks: library.tracks)
+        let abc = ABCScoreBuilder.build(score: selectedScore, scene: selectedScene, tracks: library.tracks, chords: library.chordEvents)
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {

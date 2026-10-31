@@ -6,6 +6,10 @@ Chordflow ist eine eigenständige macOS-App für ABC-Partituren und MIDI-Keyboar
 
 - Partituren für Live-Sets in einer linken Seitenleiste verwalten
 - Szenen mit Tempo und den Spuren Bass, Melodie und Akkorde bearbeiten
+- Tonart und Tonleiter je Szene sowie optional je Spur wählen
+- Akkorde im Akkordlabor mit Umkehrungen und verschiebbaren Voicing-Noten entwerfen
+- Akkordfolgen per Drag-and-drop arrangieren und unmittelbar in die Partitur übernehmen
+- Tonarten, Dominante, Subdominante und Paralleltonart im interaktiven Quintenzirkel erkunden
 - komplette Partitur oder einzelne Takte abspielen
 - Noten und Akkorde direkt anklicken
 - angeschlossenes MIDI-Keyboard durch Klick auf die Partitur aktivieren
