@@ -76,6 +76,8 @@ final class MIDIService: ObservableObject {
     private var notesByID: [Int: LiveMIDINote] = [:]
     private var started = false
     private var preparedAudio = false
+    private var previewTask: Task<Void, Never>?
+    private var previewNotes: [UInt8] = []
 
     private init() {
         engine.attach(sampler)
@@ -120,6 +122,32 @@ final class MIDIService: ObservableObject {
     }
 
     func isActive(_ sessionID: UUID) -> Bool { activeSessionID == sessionID }
+
+    func previewChord(_ pitches: [Int], duration: Duration = .milliseconds(900)) {
+        let playable = Array(Set(pitches.filter { (0...127).contains($0) })).sorted().map(UInt8.init)
+        guard !playable.isEmpty else { return }
+        do {
+            try prepareAudio()
+            stopChordPreview()
+            previewNotes = playable
+            playable.forEach { sampler.startNote($0, withVelocity: 88, onChannel: 15) }
+            previewTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: duration)
+                guard !Task.isCancelled else { return }
+                self?.stopChordPreview()
+            }
+            errorMessage = nil
+        } catch {
+            report("Akkordvorschau konnte nicht gestartet werden: \(error.localizedDescription)")
+        }
+    }
+
+    func stopChordPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        previewNotes.forEach { sampler.stopNote($0, onChannel: 15) }
+        previewNotes = []
+    }
 
     private func refresh() {
         endpoints.forEach { MIDIPortDisconnectSource(port, $0) }
@@ -170,6 +198,7 @@ final class MIDIService: ObservableObject {
     }
 
     private func stopNotes() {
+        stopChordPreview()
         for channel in UInt8(0)...15 { sampler.sendController(123, withValue: 0, onChannel: channel) }
         notesByID = [:]
         notes = []

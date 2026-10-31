@@ -31,6 +31,8 @@ final class ChordflowTests: XCTestCase {
         let abc = ABCScoreBuilder.build(score: score, scene: scene, tracks: tracks)
         XCTAssertTrue(abc.contains("Q:1/4=128"))
         XCTAssertEqual(abc.components(separatedBy: "V:v").count - 1, 3)
+        XCTAssertTrue(abc.contains("V:v1 name=\"Bass\" clef=bass"))
+        XCTAssertTrue(abc.contains("V:v2 name=\"Melodie\" clef=treble"))
     }
 
     func testScaleAndChordTheory() {
@@ -54,6 +56,20 @@ final class ChordflowTests: XCTestCase {
         XCTAssertTrue(abc.contains("\"G7\"[GBdf]4 |"))
     }
 
+    func testChordCanBeInsertedAtExplicitScenePosition() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let scoreID = try database.createScore()
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        _ = try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 0, quality: .major))
+        _ = try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 7, quality: .major))
+        _ = try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 5, quality: .major), at: 1)
+        let events = try database.chordEvents(sceneID: scene.id)
+        XCTAssertEqual(events.map(\.chord.symbol), ["C", "F", "G"])
+        XCTAssertEqual(events.map(\.position), [0, 1, 2])
+    }
+
     func testSceneAndTrackScaleChoicesPersist() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -71,6 +87,29 @@ final class ChordflowTests: XCTestCase {
         XCTAssertEqual(MusicTheory.nearestScalePitch(to: 61, tonic: 0, kind: .major), 60)
         XCTAssertEqual(MusicTheory.nearestScalePitch(to: 66, tonic: 0, kind: .major), 65)
         XCTAssertEqual(MusicTheory.nearestScalePitch(to: 64, tonic: 0, kind: .major), 64)
+    }
+
+    func testRepeatedInversionsRemainInVisibleRegister() {
+        let originalClasses = Set([60, 64, 67].map(MusicTheory.normalized))
+        var upward = [60, 64, 67]
+        var downward = upward
+        for _ in 0..<18 {
+            upward = MusicTheory.invertedVoicing(upward, upward: true)
+            downward = MusicTheory.invertedVoicing(downward, upward: false)
+            XCTAssertTrue(upward.allSatisfy { (36...84).contains($0) })
+            XCTAssertTrue(downward.allSatisfy { (36...84).contains($0) })
+            XCTAssertEqual(Set(upward.map(MusicTheory.normalized)), originalClasses)
+            XCTAssertEqual(Set(downward.map(MusicTheory.normalized)), originalClasses)
+        }
+    }
+
+    func testClefFollowsVoicingRange() {
+        XCTAssertEqual(MusicTheory.preferredClef(for: [48, 52, 55]), .bass)
+        XCTAssertEqual(MusicTheory.preferredClef(for: [55, 60, 64]), .treble)
+        XCTAssertEqual(MusicTheory.preferredClef(for: [60, 64, 67]), .treble)
+        let scene = ScoreScene(id: 1, scoreID: 1, title: "Test", tempo: 120, position: 0)
+        XCTAssertTrue(ABCScoreBuilder.singleChord(TheoryChord(root: 0, quality: .major, pitches: [48, 52, 55]), scene: scene).contains("V:chord clef=bass"))
+        XCTAssertTrue(ABCScoreBuilder.singleChord(TheoryChord(root: 0, quality: .major, pitches: [60, 64, 67]), scene: scene).contains("V:chord clef=treble"))
     }
 
     func testChordProgressionGeneratesChordAndBassVoices() throws {

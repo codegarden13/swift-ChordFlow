@@ -109,6 +109,10 @@ struct ScoreWebView: NSViewRepresentable {
         <style>
         *{box-sizing:border-box}html,body{margin:0;background:transparent;color:CanvasText;font-family:-apple-system;overflow:hidden}body{padding:8px}
         .cartograph-abc{width:100%;padding:12px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);border-radius:10px;background:color-mix(in srgb,Canvas 96%,CanvasText 4%)}
+        .cartograph-abc--compact{width:320px!important;max-width:100%;height:250px;display:block!important;padding:18px;overflow:hidden;position:relative}
+        .cartograph-abc--compact svg{top:58px!important;transform:none}
+        .cartograph-abc-compact-header{position:absolute;z-index:1;top:14px;left:18px;right:18px;display:flex;flex-direction:column;align-items:center;line-height:1.05;pointer-events:none}
+        .cartograph-abc-compact-symbol{font:700 26px -apple-system,BlinkMacSystemFont,sans-serif}.cartograph-abc-compact-title{margin-top:3px;color:color-mix(in srgb,currentColor 68%,transparent);font-size:12px}
         .cartograph-abc svg{display:block;max-width:100%;height:auto}.abcjs-note,.abcjs-rest{cursor:pointer}
         .cartograph-abc-playing,.cartograph-abc-playing *{fill:#ff3b30!important;stroke:#ff3b30!important}.cartograph-abc-midi-live,.cartograph-abc-midi-live *{fill:#0a84ff!important;stroke:#0a84ff!important}
         .cartograph-abc--error{color:#b42318}.cartograph-abc-guide--middle{stroke:#af52de;stroke-width:2;opacity:.55}.cartograph-abc-guide--g{stroke:#007aff;stroke-width:2.4;opacity:.85}.cartograph-abc-guide-label{font:700 9px -apple-system;text-anchor:end;paint-order:stroke fill;stroke:Canvas;stroke-width:3px}.cartograph-abc-guide-label--middle{fill:#af52de}.cartograph-abc-guide-label--g{fill:#007aff}

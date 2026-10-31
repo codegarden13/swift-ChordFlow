@@ -14,7 +14,11 @@ Jede Szene besitzt einen Grundton und eine Tonleiter. Wähle beides oberhalb des
 
 Wähle Grundton und Akkordtyp. Das Labor zeigt Symbol, Akkordtöne, Intervalle, harmonische Stufe und leiterfremde Töne. **Umkehrung ↑** und **Umkehrung ↓** verändern die Lage. Ziehe einen Notenkopf im Notenfeld vertikal, um das konkrete Voicing chromatisch zu verändern.
 
-**In Szene einfügen** übernimmt den entworfenen Akkord in die Akkordfolge. Wähle unter **Ziel** eine vorhandene Karte, um sie mit **Akkord ersetzen** gezielt auszutauschen. Symbol und konkrete Tonhöhen werden gemeinsam gespeichert. Mit **Auf Tonleiter einrasten** landet ein gezogener Notenkopf automatisch auf dem nächsten Ton der Szenentonleiter.
+Der Bereich **In Szene übernehmen** nennt die resultierende Position ausdrücklich. In einer leeren Szene wird der Akkord zum ersten Akkord ab Takt 1. Bei einer bestehenden Folge kannst du ihn am Ende anfügen, unmittelbar vor einem vorhandenen Akkord einfügen oder einen vorhandenen Akkord ersetzen. Positionen zeigen Akkordsymbol und Takt; nach der Aktion bestätigt Chordflow das Ergebnis. Beim Ersetzen bleiben Position und Dauer erhalten. Symbol und konkrete Tonhöhen werden gemeinsam gespeichert. Mit **Auf Tonleiter einrasten** landet ein gezogener Ton automatisch auf dem nächsten Ton der Szenentonleiter.
+
+Das Akkordlabor spielt das aktuelle Voicing nach jeder Änderung kurz mit dem internen Pianoklang. Schalte **Nach Änderungen automatisch spielen** aus, wenn du still arbeiten möchtest. **Probehören** spielt den Akkord jederzeit manuell; dafür ist kein MIDI-Keyboard erforderlich.
+
+Die Notationskarte verwendet denselben ABC-/abcjs-Renderer wie die vollständige Partitur. Schlüssel, Vorzeichen, Notenköpfe und Hilfslinien werden deshalb in beiden Ansichten identisch berechnet und gesetzt. Tiefe Voicings verwenden den Bassschlüssel, höhere den Violinschlüssel. Ziehe die Tonkarten unterhalb der Notation vertikal, um das Voicing mit der Maus zu verändern; die gemeinsame Partiturkomponente wird anschließend unmittelbar neu gerendert. Wiederholte Umkehrungen bleiben innerhalb des darstellbaren musikalischen Registers.
 
 ## Arrangement
 

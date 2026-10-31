@@ -83,6 +83,7 @@ struct ChordEvent: Identifiable, Equatable, Sendable {
 }
 
 enum MusicTheory {
+    enum StaffClef: Equatable { case treble, bass }
     static let sharpNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "H"]
     static let flatNames = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B", "H"]
     static let circleRoots = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5]
@@ -100,6 +101,18 @@ enum MusicTheory {
             if contains(pitch + distance, tonic: tonic, kind: kind) { return pitch + distance }
         }
         return pitch
+    }
+    static func invertedVoicing(_ pitches: [Int], upward: Bool) -> [Int] {
+        guard !pitches.isEmpty else { return [] }
+        var result = pitches.sorted()
+        if upward { result[0] += 12 } else { result[result.count - 1] -= 12 }
+        result.sort()
+        while result.max() ?? 0 > 84 { result = result.map { $0 - 12 } }
+        while result.min() ?? 127 < 36 { result = result.map { $0 + 12 } }
+        return result
+    }
+    static func preferredClef(for pitches: [Int]) -> StaffClef {
+        (pitches.max() ?? 60) >= 60 ? .treble : .bass
     }
     static func prefersFlats(tonic: Int) -> Bool { [1, 3, 5, 8, 10].contains(normalized(tonic)) }
     static func intervalName(_ semitones: Int) -> String { [0:"1",1:"♭2",2:"2",3:"♭3",4:"3",5:"4",6:"♭5",7:"5",8:"♭6",9:"6",10:"♭7",11:"7"][normalized(semitones)] ?? "?" }

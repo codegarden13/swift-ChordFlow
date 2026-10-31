@@ -8,6 +8,12 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum ChordLabDestination: Hashable {
+    case append
+    case insertBefore(Int64)
+    case replace(Int64)
+}
+
 struct TheoryWorkspaceView: View {
     @ObservedObject var library: ScoreLibrary
     let scene: ScoreScene
@@ -15,9 +21,13 @@ struct TheoryWorkspaceView: View {
     @State private var root = 0
     @State private var quality = ChordQuality.major
     @State private var pitches = TheoryChord(root: 0, quality: .major).pitches
-    @State private var editedChordID: Int64?
+    @State private var chordDestination = ChordLabDestination.append
+    @State private var sceneActionMessage: String?
     @State private var snapsToScale = true
+    @State private var automaticallyPreviewsChord = true
     @State private var pendingTonic: Int?
+    @State private var chordNotationHeight: CGFloat = 250
+    @StateObject private var chordNotationController = ScoreController()
 
     private var chord: TheoryChord { TheoryChord(root: root, quality: quality, pitches: pitches) }
 
@@ -77,13 +87,6 @@ struct TheoryWorkspaceView: View {
                 HStack {
                     Text("Akkordlabor").font(.title2.bold())
                     Spacer()
-                    Picker("Ziel", selection: $editedChordID) {
-                        Text("Neuer Akkord").tag(Optional<Int64>.none)
-                        ForEach(library.chordEvents) { Text("\($0.position + 1): \($0.chord.symbol)").tag(Optional($0.id)) }
-                    }.frame(width: 180)
-                    Button(editedChordID == nil ? "In Szene einfügen" : "Akkord ersetzen", systemImage: editedChordID == nil ? "plus" : "arrow.triangle.2.circlepath") {
-                        if let editedChordID { library.replaceChord(id: editedChordID, with: chord) } else { library.addChord(chord) }
-                    }.buttonStyle(.borderedProminent)
                 }
                 HStack {
                     Picker("Grundton", selection: Binding(get: { root }, set: { root = $0; resetVoicing() })) { ForEach(0..<12, id: \.self) { Text(MusicTheory.noteName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))).tag($0) } }.frame(maxWidth: 180)
@@ -96,7 +99,15 @@ struct TheoryWorkspaceView: View {
                     Toggle("Auf Tonleiter einrasten", isOn: $snapsToScale).toggleStyle(.switch)
                     Spacer()
                 }
-                ChordNoteCanvas(pitches: pitches, tonic: scene.tonic, scale: scene.scale) { index, pitch in
+                HStack {
+                    Button("Probehören", systemImage: "speaker.wave.2.fill") { previewChord() }.buttonStyle(.borderedProminent)
+                    Toggle("Nach Änderungen automatisch spielen", isOn: $automaticallyPreviewsChord).toggleStyle(.switch)
+                    Spacer()
+                }
+                sceneDestinationPanel
+                ScoreWebView(abc: chordNotationSource, height: $chordNotationHeight, controller: chordNotationController)
+                    .frame(height: min(max(chordNotationHeight, 220), 340))
+                VoicingPitchEditor(pitches: pitches, tonic: scene.tonic, scale: scene.scale) { index, pitch in
                     pitches[index] = snapsToScale ? MusicTheory.nearestScalePitch(to: pitch, tonic: scene.tonic, kind: scene.scale) : pitch
                     pitches.sort()
                 }
@@ -107,9 +118,95 @@ struct TheoryWorkspaceView: View {
                 Text("Ziehe einen Notenkopf im Notenfeld nach oben oder unten. Er rastet chromatisch auf der nächstgelegenen Tonhöhe ein.").font(.caption).foregroundStyle(.secondary)
             }.padding(18)
         }
-        .onChange(of: editedChordID) { _, id in
-            guard let event = library.chordEvents.first(where: { $0.id == id }) else { return }
+        .onChange(of: chordDestination) { _, destination in
+            guard case let .replace(id) = destination, let event = library.chordEvents.first(where: { $0.id == id }) else { return }
             root = event.root; quality = event.quality; pitches = event.pitches
+        }
+        .onChange(of: pitches) { _, _ in if automaticallyPreviewsChord { previewChord() } }
+        .onChange(of: automaticallyPreviewsChord) { _, enabled in if enabled { previewChord() } else { MIDIService.shared.stopChordPreview() } }
+        .onAppear { if automaticallyPreviewsChord { previewChord() } }
+        .onDisappear { MIDIService.shared.stopChordPreview() }
+    }
+
+    private var sceneDestinationPanel: some View {
+        GroupBox("In Szene übernehmen") {
+            VStack(alignment: .leading, spacing: 10) {
+                if library.chordEvents.isEmpty {
+                    Label("Die Szene ist leer. Dieser Akkord wird der erste Akkord und beginnt in Takt 1.", systemImage: "1.circle.fill")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Aktion und Position", selection: $chordDestination) {
+                        Section("Einfügen") {
+                            Text("Am Ende · ab Takt \(appendMeasure)").tag(ChordLabDestination.append)
+                            ForEach(library.chordEvents) { event in
+                                Text("Vor \(event.position + 1). \(event.chord.symbol) · Takt \(measureNumber(for: event))").tag(ChordLabDestination.insertBefore(event.id))
+                            }
+                        }
+                        Section("Ersetzen") {
+                            ForEach(library.chordEvents) { event in
+                                Text("\(event.position + 1). \(event.chord.symbol) ersetzen · Takt \(measureNumber(for: event))").tag(ChordLabDestination.replace(event.id))
+                            }
+                        }
+                    }
+                    .frame(maxWidth: 420)
+                    Text(destinationExplanation).font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button(destinationButtonTitle, systemImage: destinationButtonIcon) { applyChordToScene() }
+                        .buttonStyle(.borderedProminent)
+                    if let sceneActionMessage {
+                        Label(sceneActionMessage, systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.green)
+                    }
+                }
+            }
+            .padding(.top, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var appendMeasure: Int { library.chordEvents.reduce(0) { $0 + $1.beats } / 4 + 1 }
+    private func measureNumber(for event: ChordEvent) -> Int {
+        library.chordEvents.filter { $0.position < event.position }.reduce(0) { $0 + $1.beats } / 4 + 1
+    }
+    private var destinationExplanation: String {
+        switch chordDestination {
+        case .append: return "Der Akkord wird nach der vorhandenen Folge eingefügt und beginnt ab Takt \(appendMeasure)."
+        case let .insertBefore(id):
+            guard let event = library.chordEvents.first(where: { $0.id == id }) else { return "Wähle eine gültige Einfügeposition." }
+            return "Der neue Akkord wird unmittelbar vor \(event.chord.symbol) in Takt \(measureNumber(for: event)) eingefügt."
+        case let .replace(id):
+            guard let event = library.chordEvents.first(where: { $0.id == id }) else { return "Wähle einen gültigen Akkord." }
+            return "\(event.chord.symbol) in Takt \(measureNumber(for: event)) wird ersetzt; Position und Dauer bleiben erhalten."
+        }
+    }
+    private var destinationButtonTitle: String {
+        if library.chordEvents.isEmpty { return "Als ersten Akkord in Takt 1 einfügen" }
+        switch chordDestination { case .append: return "Am Ende einfügen"; case .insertBefore: return "An Position einfügen"; case .replace: return "Akkord ersetzen" }
+    }
+    private var destinationButtonIcon: String {
+        if case .replace = chordDestination { return "arrow.triangle.2.circlepath" }
+        return "plus"
+    }
+    private func applyChordToScene() {
+        if library.chordEvents.isEmpty {
+            library.addChord(chord)
+            chordDestination = .append
+            sceneActionMessage = "\(chord.symbol) beginnt in Takt 1."
+            return
+        }
+        switch chordDestination {
+        case .append:
+            let measure = appendMeasure
+            library.addChord(chord)
+            sceneActionMessage = "\(chord.symbol) wurde ab Takt \(measure) angefügt."
+        case let .insertBefore(id):
+            let measure = library.chordEvents.first(where: { $0.id == id }).map(measureNumber) ?? 1
+            library.insertChord(chord, before: id)
+            sceneActionMessage = "\(chord.symbol) wurde in Takt \(measure) eingefügt."
+        case let .replace(id):
+            let measure = library.chordEvents.first(where: { $0.id == id }).map(measureNumber) ?? 1
+            library.replaceChord(id: id, with: chord)
+            sceneActionMessage = "Akkord in Takt \(measure) wurde durch \(chord.symbol) ersetzt."
         }
     }
 
@@ -165,9 +262,12 @@ struct TheoryWorkspaceView: View {
     }
 
     private func resetVoicing() { pitches = TheoryChord(root: root, quality: quality).pitches }
+    private func previewChord() { MIDIService.shared.previewChord(pitches) }
+    private var chordNotationSource: String {
+        ABCScoreBuilder.singleChord(chord, scene: scene)
+    }
     private func invert(up: Bool) {
-        guard !pitches.isEmpty else { return }
-        if up { pitches[0] += 12; pitches.sort() } else { pitches[pitches.count - 1] -= 12; pitches.sort() }
+        pitches = MusicTheory.invertedVoicing(pitches, upward: up)
     }
     private func changeTonic(to newTonic: Int, transposesChords: Bool) {
         if transposesChords { library.transposeChordProgression(from: scene.tonic, to: newTonic) }
@@ -192,45 +292,47 @@ struct TheoryWorkspaceView: View {
     }
 }
 
-private struct ChordNoteCanvas: View {
+private struct VoicingPitchEditor: View {
     let pitches: [Int]
     let tonic: Int
     let scale: ScaleKind
     let onChange: (Int, Int) -> Void
-    private let step: CGFloat = 11
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                RoundedRectangle(cornerRadius: 12).fill(.background).stroke(.quaternary)
-                ForEach(0..<5) { line in Path { path in let y = 92 + CGFloat(line) * step * 2; path.move(to: CGPoint(x: 22, y: y)); path.addLine(to: CGPoint(x: geometry.size.width - 22, y: y)) }.stroke(.secondary, lineWidth: 1) }
-                Text("𝄞").font(.system(size: 74)).position(x: 48, y: 132)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Voicing bearbeiten").font(.headline)
+            Text("Ziehe einen Ton nach oben oder unten; die Partitur darüber wird mit demselben Renderer sofort neu gesetzt.").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
                 ForEach(Array(pitches.enumerated()), id: \.offset) { index, pitch in
-                    DraggableNoteHead(label: MusicTheory.pitchName(pitch), inScale: MusicTheory.contains(pitch, tonic: tonic, kind: scale), step: step) { semitones in
+                    DraggablePitchCard(pitch: pitch, inScale: MusicTheory.contains(pitch, tonic: tonic, kind: scale)) { semitones in
                         onChange(index, max(36, min(88, pitch - semitones)))
                     }
-                        .position(x: 115 + CGFloat(index) * 58, y: y(for: pitch))
                 }
             }
-        }.frame(width: 360, height: 260)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
     }
-    private func y(for pitch: Int) -> CGFloat { 70 + CGFloat(72 - pitch) * step }
 }
 
-private struct NoteHead: View {
-    let label: String; let inScale: Bool
-    var body: some View { VStack(spacing: 2) { Ellipse().fill(inScale ? Color.blue : .orange).frame(width: 25, height: 17); Text(label).font(.caption2.bold()) } }
-}
-
-private struct DraggableNoteHead: View {
-    let label: String; let inScale: Bool; let step: CGFloat; let moved: (Int) -> Void
+private struct DraggablePitchCard: View {
+    let pitch: Int
+    let inScale: Bool
+    let moved: (Int) -> Void
     @GestureState private var translation: CGFloat = 0
+
     var body: some View {
-        NoteHead(label: label, inScale: inScale)
-            .offset(y: translation)
-            .gesture(DragGesture()
-                .updating($translation) { value, state, _ in state = value.translation.height }
-                .onEnded { moved(Int(($0.translation.height / step).rounded())) })
+        VStack(spacing: 4) {
+            Image(systemName: "arrow.up.and.down").font(.caption).foregroundStyle(.secondary)
+            Text(MusicTheory.pitchName(pitch)).font(.headline.monospaced())
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(inScale ? Color.blue.opacity(0.14) : Color.orange.opacity(0.18), in: RoundedRectangle(cornerRadius: 9))
+        .offset(y: translation)
+        .gesture(DragGesture()
+            .updating($translation) { value, state, _ in state = value.translation.height }
+            .onEnded { moved(Int(($0.translation.height / 11).rounded())) })
     }
 }
 

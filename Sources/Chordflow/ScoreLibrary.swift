@@ -132,10 +132,16 @@ final class ScoreDatabase {
     func updateScene(_ scene: ScoreScene) throws { try run("UPDATE scenes SET title = ?, tempo = ?, tonic = ?, scale_kind = ? WHERE id = ?", binds: [.text(scene.title), .integer(Int64(scene.tempo)), .integer(Int64(scene.tonic)), .text(scene.scale.rawValue), .integer(scene.id)]); try touch(scene.scoreID) }
     func updateTrack(_ track: ScoreTrack, scoreID: Int64) throws { try run("UPDATE tracks SET name = ?, abc = ?, scale_kind = ? WHERE id = ?", binds: [.text(track.name), .text(track.abc), track.scaleOverride.map { .text($0.rawValue) } ?? .null, .integer(track.id)]); try touch(scoreID) }
     func deleteScore(id: Int64) throws { try run("DELETE FROM scores WHERE id = ?", binds: [.integer(id)]) }
-    @discardableResult func addChord(sceneID: Int64, chord: TheoryChord) throws -> Int64 {
-        let position = try scalarInt("SELECT count(*) FROM chord_events WHERE scene_id = ?", binds: [.integer(sceneID)])
-        try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats) VALUES (?, ?, ?, ?, ?, 4)", binds: [.integer(sceneID), .integer(position), .integer(Int64(chord.root)), .text(chord.quality.rawValue), .text(chord.pitches.map(String.init).joined(separator: ","))])
-        return sqlite3_last_insert_rowid(handle)
+    @discardableResult func addChord(sceneID: Int64, chord: TheoryChord, at requestedPosition: Int? = nil) throws -> Int64 {
+        try transaction {
+            let count = Int(try scalarInt("SELECT count(*) FROM chord_events WHERE scene_id = ?", binds: [.integer(sceneID)]))
+            let position = min(max(0, requestedPosition ?? count), count)
+            if position < count {
+                try run("UPDATE chord_events SET position = position + 1 WHERE scene_id = ? AND position >= ?", binds: [.integer(sceneID), .integer(Int64(position))])
+            }
+            try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats) VALUES (?, ?, ?, ?, ?, 4)", binds: [.integer(sceneID), .integer(Int64(position)), .integer(Int64(chord.root)), .text(chord.quality.rawValue), .text(chord.pitches.map(String.init).joined(separator: ","))])
+            return sqlite3_last_insert_rowid(handle)
+        }
     }
     func updateChord(_ event: ChordEvent) throws {
         try run("UPDATE chord_events SET position = ?, root = ?, quality = ?, pitches = ?, beats = ? WHERE id = ?", binds: [.integer(Int64(event.position)), .integer(Int64(event.root)), .text(event.quality.rawValue), .text(event.pitches.map(String.init).joined(separator: ",")), .integer(Int64(event.beats)), .integer(event.id)])
@@ -215,6 +221,10 @@ final class ScoreDatabase {
     func updateScene(_ scene: ScoreScene) { perform("Szene konnte nicht gespeichert werden") { try $0.updateScene(scene); if let index = scenes.firstIndex(where: { $0.id == scene.id }) { scenes[index] = scene } } }
     func updateTrack(_ track: ScoreTrack) { guard let scoreID = selectedScoreID else { return }; perform("Spur konnte nicht gespeichert werden") { try $0.updateTrack(track, scoreID: scoreID); if let index = tracks.firstIndex(where: { $0.id == track.id }) { tracks[index] = track } } }
     func addChord(_ chord: TheoryChord) { guard let sceneID = selectedSceneID else { return }; perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord); chordEvents = try $0.chordEvents(sceneID: sceneID) } }
+    func insertChord(_ chord: TheoryChord, before eventID: Int64) {
+        guard let sceneID = selectedSceneID, let position = chordEvents.first(where: { $0.id == eventID })?.position else { return }
+        perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord, at: position); chordEvents = try $0.chordEvents(sceneID: sceneID) }
+    }
     func updateChord(_ event: ChordEvent) { perform("Akkord konnte nicht gespeichert werden") { try $0.updateChord(event); if let index = chordEvents.firstIndex(where: { $0.id == event.id }) { chordEvents[index] = event } } }
     func replaceChord(id: Int64, with chord: TheoryChord) {
         guard var event = chordEvents.first(where: { $0.id == id }) else { return }
@@ -246,7 +256,8 @@ enum ABCScoreBuilder {
             if !chords.isEmpty && track.name == "Akkorde" { content = chordABC(chords) }
             else if !chords.isEmpty && track.name == "Bass" { content = bassABC(chords) }
             else { content = track.abc }
-            return "V:v\(index + 1) name=\"\(escaped(track.name))\"\n\(content)"
+            let clef = track.position == 0 || track.name.compare("Bass", options: .caseInsensitive) == .orderedSame ? "bass" : "treble"
+            return "V:v\(index + 1) name=\"\(escaped(track.name))\" clef=\(clef)\n\(content)"
         }.joined(separator: "\n")
         return "X:1\nT:\(score.title) – \(scene.title)\nM:4/4\nL:1/4\nQ:1/4=\(scene.tempo)\nK:\(MusicTheory.abcKey(tonic: scene.tonic, kind: scene.scale))\n%%score { \(tracks.indices.map { "v\($0 + 1)" }.joined(separator: " ")) }\n\(voices)"
     }
@@ -257,4 +268,9 @@ enum ABCScoreBuilder {
         events.map { event in "\(MusicTheory.abcNote(36 + event.root))\(event.beats) |" }.joined(separator: " ")
     }
     private static func escaped(_ value: String) -> String { value.replacingOccurrences(of: "\"", with: "'") }
+
+    static func singleChord(_ chord: TheoryChord, scene: ScoreScene) -> String {
+        let clef = MusicTheory.preferredClef(for: chord.pitches) == .bass ? "bass" : "treble"
+        return "X:1\nT:\(chord.symbol)\nM:4/4\nL:1/4\nK:\(MusicTheory.abcKey(tonic: scene.tonic, kind: scene.scale))\nV:chord clef=\(clef)\n[V:chord] \"\(chord.symbol)\"[\(chord.pitches.map(MusicTheory.abcNote).joined())]4 |"
+    }
 }
