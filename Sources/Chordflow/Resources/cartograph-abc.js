@@ -2,6 +2,7 @@
   "use strict";
 
   const scores = new WeakMap();
+  let editedSelection = null;
 
   function message(error) {
     return error && error.message ? error.message : String(error);
@@ -118,9 +119,10 @@
     const measures = [];
     const elementNotes = new Map();
 
-    ABCJS.synth.sequence(tune, {}).forEach(track => {
+    ABCJS.synth.sequence(tune, {}).forEach((track, trackIndex) => {
       let qpm = 120;
       let measure = 0;
+      let noteIndex = 0;
       let key = {};
       let accidentals = {};
       track.forEach(event => {
@@ -146,6 +148,8 @@
           start: event.timing * 240 / qpm,
           duration: Math.max(0.08, event.duration * 240 / qpm),
           measure,
+          trackIndex,
+          noteIndex: noteIndex++,
           elements: Array.from(event.elem?.abselem?.elemset || []).filter(Boolean)
         };
         notes.push(note);
@@ -158,7 +162,62 @@
   }
 
   function isSingleChordSequence(sequence) {
-    return sequence.notes.length === 1 && sequence.notes[0].pitches.length > 1;
+    if (!sequence.notes.length) return false;
+    const first = sequence.notes[0];
+    return sequence.notes.every(note => note.start === first.start && note.duration === first.duration)
+      && sequence.notes.reduce((count, note) => count + note.pitches.length, 0) > 1;
+  }
+
+  function pitchIndexFor(element, analysis) {
+    const pitches = element?.pitches || [];
+    if (pitches.length < 2) return 0;
+    const staffPosition = Number(analysis?.staffPos);
+    if (!Number.isFinite(staffPosition)) return 0;
+    let best = 0;
+    for (let index = 1; index < pitches.length; index++) {
+      if (Math.abs(pitches[index].pitch - staffPosition) < Math.abs(pitches[best].pitch - staffPosition)) best = index;
+    }
+    return best;
+  }
+
+  function showEditedSelection(selection) {
+    document.querySelectorAll(".cartograph-abc-edit-selected").forEach(element => element.classList.remove("cartograph-abc-edit-selected"));
+    const note = score().sequence.notes.find(candidate => candidate.trackIndex === selection.trackIndex && candidate.noteIndex === selection.noteIndex);
+    if (!note) return false;
+    note.elements.forEach(element => element.classList.add("cartograph-abc-edit-selected"));
+    editedSelection = { ...selection, midi: note.pitches[selection.pitchIndex] ?? selection.midi };
+    return true;
+  }
+
+  function showPitchSelection(midi) {
+    const target = Number(midi);
+    for (const note of score().sequence.notes) {
+      const pitchIndex = note.pitches.indexOf(target);
+      if (pitchIndex < 0) continue;
+      return showEditedSelection({
+        trackIndex: note.trackIndex,
+        noteIndex: note.noteIndex,
+        measure: note.measure,
+        pitchIndex,
+        midi: target
+      });
+    }
+    return false;
+  }
+
+  function setEditedSelectionColor(color) {
+    document.documentElement.style.setProperty("--cartograph-edit-color", String(color));
+    return true;
+  }
+
+  async function selectEditableNote(element, analysis) {
+    const note = score().sequence.elementNotes.get(element);
+    if (!note) return;
+    const pitchIndex = Math.min(pitchIndexFor(element, analysis), note.pitches.length - 1);
+    const selection = { trackIndex: note.trackIndex, noteIndex: note.noteIndex, measure: note.measure, pitchIndex, midi: note.pitches[pitchIndex] };
+    showEditedSelection(selection);
+    global.webkit?.messageHandlers?.abcNotationSelection?.postMessage(selection);
+    await audio.play([{ ...note, pitches: [selection.midi] }], true);
   }
 
   function filename(title) {
@@ -197,6 +256,13 @@
     if (plan.tracks.length) summary.append(`Tracks: ${plan.tracks.join(" · ")}`);
     if (plan.sections.length) summary.append(`${plan.tracks.length ? " — " : ""}Abschnitte: ${plan.sections.join(" · ")}`);
     block.prepend(summary);
+  }
+
+  function hideContinuationInstrumentNames(block) {
+    const names = Array.from(block.querySelectorAll(".abcjs-instrument-name"));
+    names
+      .filter(name => name.textContent.trim() === "Akkordе")
+      .forEach(name => name.style.visibility = "hidden");
   }
 
   function sourceWithLayoutDefaults(source) {
@@ -287,11 +353,10 @@
       const renderOptions = {
         add_classes: true,
         responsive: "resize",
-        clickListener: async element => {
-          const note = sequence?.elementNotes.get(element);
-          if (note) {
+        clickListener: async (element, _tune, _classes, analysis) => {
+          if (sequence?.elementNotes.get(element)) {
             try {
-              await audio.play([note], true);
+              await selectEditableNote(element, analysis);
             } catch (error) {
               const detail = `Ton konnte nicht abgespielt werden: ${message(error)}`;
               let output = block.querySelector(".cartograph-abc-audio-error");
@@ -324,8 +389,9 @@
         addCompactHeader(block, source, originalTune);
       }
       addTrebleStaffGuides(block, tunes[0]);
+      hideContinuationInstrumentNames(block);
       scores.set(block, { sequence, tune: originalTune });
-      addArrangement(block, source);
+      if (!block.classList.contains("cartograph-abc--compact")) addArrangement(block, source);
       return { block };
     } catch (error) {
       const detail = message(error);
@@ -349,6 +415,13 @@
     if (!value) throw new Error("Die Partitur ist noch nicht bereit.");
     return value;
   }
+
+  document.addEventListener("keydown", event => {
+    if (!editedSelection || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    event.preventDefault();
+    const delta = event.key === "ArrowUp" ? 1 : -1;
+    global.webkit?.messageHandlers?.abcNotationTranspose?.postMessage({ selection: editedSelection, delta });
+  });
 
   async function playAll() {
     const { sequence } = score();
@@ -379,6 +452,31 @@
     });
   }
 
+  function clearSelection() {
+    document.querySelectorAll(".cartograph-abc-selected-measure,.cartograph-abc-selected-chord").forEach(element => {
+      element.classList.remove("cartograph-abc-selected-measure", "cartograph-abc-selected-chord");
+    });
+  }
+
+  function highlightChord(measure, pitches) {
+    clearSelection();
+    const selected = [...new Set((pitches || []).map(Number))].sort((a, b) => a - b);
+    const sequence = score().sequence;
+    const measuredNotes = sequence.measures[Number(measure)] || [];
+    const matchingNotes = sequence.notes.filter(note => {
+      const notePitches = [...new Set(note.pitches)].sort((a, b) => a - b);
+      return notePitches.length === selected.length && notePitches.every((pitch, index) => pitch === selected[index]);
+    });
+    const notes = measuredNotes.length ? measuredNotes : matchingNotes;
+    notes.forEach(note => note.elements.forEach(element => element.classList.add("cartograph-abc-selected-measure")));
+    const measuredMatches = notes.filter(note => matchingNotes.includes(note));
+    (measuredMatches.length ? measuredMatches : matchingNotes).forEach(note => {
+      note.elements.forEach(element => element.classList.add("cartograph-abc-selected-chord"));
+    });
+    return notes.length > 0 || matchingNotes.length > 0;
+  }
+
+
   function measureCount() {
     const measures = score().sequence.measures;
     let count = measures.length;
@@ -392,7 +490,7 @@
 
   function singleChord() {
     const sequence = score().sequence;
-    return isSingleChordSequence(sequence) ? { pitches: sequence.notes[0].pitches } : null;
+    return isSingleChordSequence(sequence) ? { pitches: sequence.notes.flatMap(note => note.pitches).sort((a, b) => a - b) } : null;
   }
 
   global.CartoGraphABC = {
@@ -401,6 +499,11 @@
     playMeasure,
     loopMeasure,
     setLiveMIDINotes,
+    highlightChord,
+    clearSelection,
+    showEditedSelection,
+    showPitchSelection,
+    setEditedSelectionColor,
     measureCount,
     isSingleChord,
     singleChord,

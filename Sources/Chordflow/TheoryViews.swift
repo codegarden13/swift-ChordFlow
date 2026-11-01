@@ -14,10 +14,18 @@ private enum ChordLabDestination: Hashable {
     case replace(Int64)
 }
 
+private enum ArrangementAnalysisMode: String, CaseIterable, Identifiable {
+    case roles = "Rollen"
+    case voiceLeading = "Stimmführung"
+    var id: String { rawValue }
+}
+
 struct TheoryWorkspaceView: View {
     @ObservedObject var library: ScoreLibrary
     let scene: ScoreScene
     let mode: WorkspaceMode
+    let scoreController: ScoreController
+    @Binding var selectedArrangementChord: ChordEvent?
     @State private var root = 0
     @State private var quality = ChordQuality.major
     @State private var pitches = TheoryChord(root: 0, quality: .major).pitches
@@ -26,6 +34,7 @@ struct TheoryWorkspaceView: View {
     @State private var snapsToScale = true
     @State private var automaticallyPreviewsChord = true
     @State private var pendingTonic: Int?
+    @State private var arrangementAnalysisMode = ArrangementAnalysisMode.roles
     @State private var chordNotationHeight: CGFloat = 250
     @StateObject private var chordNotationController = ScoreController()
 
@@ -45,19 +54,30 @@ struct TheoryWorkspaceView: View {
 
     private var arrangement: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Akkordfolge").font(.title2.bold())
-            Text("Ziehe Karten, um die Reihenfolge zu ändern. Die Stufe bezieht sich auf \(MusicTheory.noteName(scene.tonic)) \(scene.scale.title).").foregroundStyle(.secondary)
-            if library.chordEvents.isEmpty {
-                ContentUnavailableView("Noch keine Akkorde", systemImage: "rectangle.stack.badge.plus", description: Text("Entwirf einen Akkord im Akkordlabor und füge ihn hier ein."))
-            } else {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 12) {
-                        ForEach(library.chordEvents) { event in chordCard(event) }
-                    }.padding(.vertical, 8)
+                Text("Akkordfolge").font(.title2.bold())
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Ziehe Karten, um die Reihenfolge zu ändern. Die Stufe bezieht sich auf \(MusicTheory.noteName(scene.tonic)) \(scene.scale.title).").foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("Analyse", selection: $arrangementAnalysisMode) {
+                        ForEach(ArrangementAnalysisMode.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 230)
                 }
-            }
-            Spacer()
-        }.padding(18)
+                if arrangementAnalysisMode == .roles { ToneRoleLegend() }
+                else { VoiceLeadingLegend() }
+                if library.chordEvents.isEmpty {
+                    ContentUnavailableView("Noch keine Akkorde", systemImage: "rectangle.stack.badge.plus", description: Text("Entwirf einen Akkord im Akkordlabor und füge ihn hier ein."))
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 240), spacing: 12)], alignment: .leading, spacing: 12) {
+                            ForEach(library.chordEvents) { event in chordCard(event) }
+                        }.padding(.vertical, 8)
+                    }
+                }
+                Spacer()
+        }
+        .padding(18)
     }
 
     private func chordCard(_ event: ChordEvent) -> some View {
@@ -67,17 +87,48 @@ struct TheoryWorkspaceView: View {
                 Spacer()
                 Button("Löschen", systemImage: "xmark.circle", role: .destructive) { library.deleteChord(event.id) }.labelStyle(.iconOnly).buttonStyle(.plain)
             }
-            Text(MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale) ?? "leiterfremd").font(.headline).foregroundStyle(functionColor(event.root))
+            Text(MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale) ?? "chromatischer Akkord").font(.headline).foregroundStyle(functionColor(event.root))
             Text(event.pitches.map { MusicTheory.pitchName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)) }.joined(separator: " · ")).font(.caption.monospaced())
+            if arrangementAnalysisMode == .voiceLeading { voiceLeadingSummary(for: event) }
             Stepper("\(event.beats) Zählzeiten", value: Binding(get: { event.beats }, set: { value in
                 var changed = event; changed.beats = value; library.updateChord(changed)
             }), in: 1...32)
         }
-        .padding(14).frame(width: 190).frame(minHeight: 150).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        .padding(14).frame(maxWidth: .infinity, minHeight: 150).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .onTapGesture {
+            selectedArrangementChord = event
+            previewArrangementChord(event)
+        }
+        .help(chordHelp(event))
         .draggable(String(event.id))
         .dropDestination(for: String.self) { values, _ in
             guard let raw = values.first, let source = Int64(raw) else { return false }
             library.moveChord(source, before: event.id); return true
+        }
+    }
+
+    @ViewBuilder private func voiceLeadingSummary(for event: ChordEvent) -> some View {
+        if let index = library.chordEvents.firstIndex(where: { $0.id == event.id }), library.chordEvents.indices.contains(index + 1) {
+            let next = library.chordEvents[index + 1]
+            let analysis = MusicTheory.voiceLeading(from: event.chord, to: next.chord)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("→ \(next.chord.symbol)").font(.caption.bold()).foregroundStyle(.secondary)
+                if !analysis.commonPitchClasses.isEmpty {
+                    Label("Bleibt: \(analysis.commonPitchClasses.map { MusicTheory.noteName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)) }.joined(separator: ", "))", systemImage: "link")
+                        .foregroundStyle(.green)
+                }
+                if !analysis.semitoneMoves.isEmpty {
+                    Label(analysis.semitoneMoves.map { "\(MusicTheory.noteName($0.from))→\(MusicTheory.noteName($0.to))" }.joined(separator: " · "), systemImage: "arrow.left.arrow.right")
+                        .foregroundStyle(.orange)
+                }
+                if analysis.commonPitchClasses.isEmpty && analysis.semitoneMoves.isEmpty {
+                    Text("Keine direkten Liege- oder Halbtonverbindungen").foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+        } else {
+            Text("Ende der Akkordfolge").font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -96,9 +147,11 @@ struct TheoryWorkspaceView: View {
                 HStack {
                     Button("Umkehrung ↑") { invert(up: true) }
                     Button("Umkehrung ↓") { invert(up: false) }
-                    Toggle("Auf Tonleiter einrasten", isOn: $snapsToScale).toggleStyle(.switch)
+                    Toggle("Beim Ziehen auf Szenentonleiter einrasten", isOn: $snapsToScale).toggleStyle(.switch)
                     Spacer()
                 }
+                Text(snapsToScale ? "Mausziehen überspringt leiterfremde Halbtöne. ↑/↓ bleibt chromatisch." : "Mausziehen und ↑/↓ verschieben chromatisch in Halbtonschritten.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Probehören", systemImage: "speaker.wave.2.fill") { previewChord() }.buttonStyle(.borderedProminent)
                     Toggle("Nach Änderungen automatisch spielen", isOn: $automaticallyPreviewsChord).toggleStyle(.switch)
@@ -111,7 +164,7 @@ struct TheoryWorkspaceView: View {
                     pitches[index] = snapsToScale ? MusicTheory.nearestScalePitch(to: pitch, tonic: scene.tonic, kind: scene.scale) : pitch
                     pitches.sort()
                 }
-                chordExplanation
+                ChordTheoryExplanation(chord: chord, scene: scene)
                 ScrollView(.horizontal, showsIndicators: true) {
                     PianoView(pitches: pitches, scale: Set(MusicTheory.scale(tonic: scene.tonic, kind: scene.scale)), tonic: scene.tonic)
                 }
@@ -210,18 +263,6 @@ struct TheoryWorkspaceView: View {
         }
     }
 
-    private var chordExplanation: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(chord.symbol).font(.system(size: 34, weight: .bold))
-            LabeledContent("Typ", value: quality.title)
-            LabeledContent("Töne", value: pitches.map { MusicTheory.pitchName($0) }.joined(separator: " · "))
-            LabeledContent("Intervalle", value: chord.intervalLabels.joined(separator: " · "))
-            LabeledContent("Stufe", value: MusicTheory.romanDegree(root: root, tonic: scene.tonic, kind: scene.scale) ?? "leiterfremd")
-            let foreign = pitches.filter { !MusicTheory.contains($0, tonic: scene.tonic, kind: scene.scale) }
-            Label(foreign.isEmpty ? "Alle Töne liegen in der Tonleiter" : "Leiterfremd: \(foreign.map { MusicTheory.noteName($0) }.joined(separator: ", "))", systemImage: foreign.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(foreign.isEmpty ? .green : .orange)
-        }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
-    }
-
     private var circle: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -281,6 +322,16 @@ struct TheoryWorkspaceView: View {
         default: .red
         }
     }
+    private func chordHelp(_ event: ChordEvent) -> String {
+        let chord = event.chord
+        let tones = chord.pitches.map { MusicTheory.pitchName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)) }.joined(separator: " · ")
+        let degree = MusicTheory.romanDegree(root: chord.root, tonic: scene.tonic, kind: scene.scale) ?? "chromatischer Grundton"
+        return "\(chord.symbol) · \(chord.quality.title)\nTöne: \(tones)\nIntervalle: \(chord.intervalLabels.joined(separator: " · "))\nStufe: \(degree)\nKlicken zum Anhören und Anzeigen"
+    }
+    private func previewArrangementChord(_ event: ChordEvent) {
+        MIDIService.shared.previewChord(event.pitches)
+        scoreController.highlightChord(measure: measureNumber(for: event) - 1, pitches: event.pitches)
+    }
     private var learningText: String {
         "Die Tonika \(MusicTheory.noteName(scene.tonic)) vermittelt Ruhe. Die Dominante \(MusicTheory.noteName(scene.tonic + 7)) erzeugt Spannung und führt zurück zur Tonika; die Subdominante \(MusicTheory.noteName(scene.tonic + 5)) öffnet die Bewegung von ihr weg."
     }
@@ -289,6 +340,236 @@ struct TheoryWorkspaceView: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.headline)
         }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+struct ArrangementChordDetail: View {
+    let event: ChordEvent
+    let scene: ScoreScene
+    let measure: Int
+    let update: (ChordEvent) -> Void
+    let close: () -> Void
+    @State private var draft: ChordEvent
+    @State private var snapsToScale = true
+    @State private var notationHeight: CGFloat = 250
+    @State private var offset = CGSize.zero
+    @GestureState private var dragOffset = CGSize.zero
+    @StateObject private var notationController = ScoreController()
+
+    init(event: ChordEvent, scene: ScoreScene, measure: Int, update: @escaping (ChordEvent) -> Void, close: @escaping () -> Void) {
+        self.event = event
+        self.scene = scene
+        self.measure = measure
+        self.update = update
+        self.close = close
+        _draft = State(initialValue: event)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button(action: close) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                .help("Schließen (Esc)")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Akkord in Takt \(measure)").font(.title2.bold())
+                    Text("Position \(event.position + 1) · \(event.beats) Zählzeiten").font(.callout).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(moveGesture)
+                .help("Zum Verschieben ziehen")
+            }
+            editControls
+            HStack(alignment: .top, spacing: 14) {
+                VStack(spacing: 6) {
+                    ScoreWebView(abc: ABCScoreBuilder.singleChord(draft.chord, scene: scene), height: $notationHeight, controller: notationController)
+                        .frame(width: 380, height: 185)
+                    HStack(spacing: 6) {
+                        ForEach(draft.pitches, id: \.self) { pitch in
+                            let analysis = MusicTheory.analyzeTone(pitch, tonic: scene.tonic, sceneScale: scene.scale, trackScale: scene.scale, chord: draft.chord)
+                            Text(MusicTheory.pitchName(pitch, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)))
+                                .font(.caption.monospaced().weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .foregroundStyle(toneRoleColor(analysis.role))
+                                .background(toneRoleColor(analysis.role).opacity(0.14), in: Capsule())
+                                .overlay(Capsule().stroke(toneRoleColor(analysis.role).opacity(0.65)))
+                                .help(analysis.explanation)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .frame(width: 380)
+                ChordTheoryExplanation(chord: draft.chord, scene: scene, showsSymbol: false)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(.top, 8)
+            }
+            VoicingPitchEditor(pitches: draft.pitches, tonic: scene.tonic, scale: scene.scale) { index, pitch in
+                guard draft.pitches.indices.contains(index) else { return }
+                draft.pitches[index] = snapsToScale ? MusicTheory.nearestScalePitch(to: pitch, tonic: scene.tonic, kind: scene.scale) : pitch
+                draft.pitches.sort()
+                commit()
+            }
+            PianoView(pitches: draft.pitches, scale: Set(MusicTheory.scale(tonic: scene.tonic, kind: scene.scale)), tonic: scene.tonic, keyHeight: 64)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(16)
+        .frame(width: 780, height: 625)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.separator.opacity(0.55)))
+        .shadow(color: .black.opacity(0.22), radius: 22, y: 10)
+        .offset(x: offset.width + dragOffset.width, y: offset.height + dragOffset.height)
+        .onAppear {
+            notationController.transposeHandler = { selection, semitones in
+                transposeSelectedPitch(selection, by: semitones)
+            }
+            notationController.selectionHandler = { selection in
+                let analysis = MusicTheory.analyzeTone(selection.midi, tonic: scene.tonic, sceneScale: scene.scale, trackScale: scene.scale, chord: draft.chord)
+                notationController.setSelectedNoteColor(toneRoleCSSColor(analysis.role))
+            }
+        }
+        .onChange(of: event) { _, changed in draft = changed }
+        .onDisappear {
+            notationController.transposeHandler = nil
+            notationController.selectionHandler = nil
+            MIDIService.shared.stopChordPreview()
+        }
+    }
+
+    private var editControls: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 10) {
+                Picker("Grundton", selection: Binding(get: { draft.root }, set: { root in
+                    draft.root = root
+                    draft.pitches = TheoryChord(root: root, quality: draft.quality).pitches
+                    draft.bassPitch = nil
+                    commit()
+                })) {
+                    ForEach(0..<12, id: \.self) { root in
+                        Text(MusicTheory.noteName(root, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))).tag(root)
+                    }
+                }
+                .frame(width: 145)
+                Picker("Akkord", selection: Binding(get: { draft.quality }, set: { quality in
+                    draft.quality = quality
+                    draft.pitches = TheoryChord(root: draft.root, quality: quality).pitches
+                    commit()
+                })) {
+                    ForEach(ChordQuality.allCases) { Text($0.title).tag($0) }
+                }
+                .frame(width: 210)
+                Button("Umkehrung ↑") { draft.pitches = MusicTheory.invertedVoicing(draft.pitches, upward: true); commit() }
+                Button("Umkehrung ↓") { draft.pitches = MusicTheory.invertedVoicing(draft.pitches, upward: false); commit() }
+            }
+            HStack(spacing: 8) {
+                Toggle("Beim Ziehen auf Szenentonleiter einrasten", isOn: $snapsToScale).toggleStyle(.switch)
+                Text(snapsToScale ? "Leiterfremde Halbtöne werden übersprungen; ↑/↓ bleibt chromatisch." : "Alle Eingaben sind chromatisch.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .controlSize(.small)
+    }
+
+    private func commit() { update(draft) }
+
+    private func transposeSelectedPitch(_ selection: ScoreNoteSelection, by semitones: Int) {
+        guard let index = draft.pitches.firstIndex(of: selection.midi) else {
+            notationController.report("Der gewählte Akkordton ist im aktuellen Voicing nicht mehr vorhanden.")
+            return
+        }
+        let changedPitch = selection.midi + semitones
+        guard (0...127).contains(changedPitch) else {
+            notationController.report("Die Tonhöhe liegt außerhalb des MIDI-Bereichs.")
+            return
+        }
+        draft.pitches[index] = changedPitch
+        draft.pitches.sort()
+        let analysis = MusicTheory.analyzeTone(changedPitch, tonic: scene.tonic, sceneScale: scene.scale, trackScale: scene.scale, chord: draft.chord)
+        notationController.setSelectedNoteColor(toneRoleCSSColor(analysis.role))
+        notationController.updateSelectedPitch(changedPitch)
+        commit()
+    }
+
+    private var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
+            .updating($dragOffset) { value, state, _ in state = value.translation }
+            .onEnded { value in
+                offset.width += value.translation.width
+                offset.height += value.translation.height
+            }
+    }
+
+}
+
+private struct ChordTheoryExplanation: View {
+    let chord: TheoryChord
+    let scene: ScoreScene
+    var showsSymbol = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if showsSymbol { Text(chord.symbol).font(.system(size: 34, weight: .bold)) }
+            LabeledContent("Typ", value: chord.quality.title)
+            LabeledContent("Töne", value: chord.pitches.map { MusicTheory.pitchName($0) }.joined(separator: " · "))
+            LabeledContent("Intervalle", value: chord.intervalLabels.joined(separator: " · "))
+            LabeledContent("Stufe", value: MusicTheory.romanDegree(root: chord.root, tonic: scene.tonic, kind: scene.scale) ?? "chromatischer Grundton")
+            ForEach(chord.pitches, id: \.self) { pitch in
+                let analysis = MusicTheory.analyzeTone(pitch, tonic: scene.tonic, sceneScale: scene.scale, trackScale: scene.scale, chord: chord)
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Circle().fill(toneRoleColor(analysis.role)).frame(width: 8, height: 8)
+                    Text("\(MusicTheory.noteName(pitch)): \(analysis.title)").font(.caption.bold())
+                    Text(analysis.explanation).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private func toneRoleColor(_ role: ToneRole) -> Color {
+    switch role { case .chordTone: .blue; case .chordColor: .orange; case .common: .green; case .scene: .purple; case .track: .cyan; case .tension: .red }
+}
+
+private func toneRoleCSSColor(_ role: ToneRole) -> String {
+    switch role { case .chordTone: "#0a84ff"; case .chordColor: "#ff9f0a"; case .common: "#30d158"; case .scene: "#bf5af2"; case .track: "#64d2ff"; case .tension: "#ff453a" }
+}
+
+private struct ToneRoleLegend: View {
+    private let entries: [(ToneRole, String)] = [
+        (.chordTone, "Akkordton"), (.chordColor, "erklärte Akkordfarbe"), (.common, "gemeinsam"),
+        (.scene, "nur Szene"), (.track, "nur Spur"), (.tension, "offene Spannung")
+    ]
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                Label {
+                    Text(entry.1)
+                } icon: {
+                    Circle().fill(toneRoleColor(entry.0)).frame(width: 8, height: 8)
+                }
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}
+
+private struct VoiceLeadingLegend: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            Label("gemeinsamer Liegeton", systemImage: "link").foregroundStyle(.green)
+            Label("Halbtonauflösung", systemImage: "arrow.left.arrow.right").foregroundStyle(.orange)
+            Text("Die Karte beschreibt den Weg zum jeweils nächsten Akkord.").foregroundStyle(.secondary)
+        }
+        .font(.caption)
     }
 }
 
@@ -301,7 +582,7 @@ private struct VoicingPitchEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Voicing bearbeiten").font(.headline)
-            Text("Ziehe einen Ton nach oben oder unten; die Partitur darüber wird mit demselben Renderer sofort neu gesetzt.").font(.caption).foregroundStyle(.secondary)
+            Text("Ziehe einen Ton oder wähle ihn in der Notenzeile und verschiebe ihn mit ↑/↓ chromatisch. Die Partitur wird sofort neu gesetzt.").font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 ForEach(Array(pitches.enumerated()), id: \.offset) { index, pitch in
                     DraggablePitchCard(pitch: pitch, inScale: MusicTheory.contains(pitch, tonic: tonic, kind: scale)) { semitones in
@@ -338,6 +619,7 @@ private struct DraggablePitchCard: View {
 
 private struct PianoView: View {
     let pitches: [Int]; let scale: Set<Int>; let tonic: Int
+    var keyHeight: CGFloat = 105
     var body: some View {
         HStack(spacing: 2) {
             ForEach(48..<73, id: \.self) { pitch in
@@ -345,7 +627,7 @@ private struct PianoView: View {
                 VStack(spacing: 4) {
                     RoundedRectangle(cornerRadius: 3).fill(pitches.contains(pitch) ? Color.blue : scale.contains(pitchClass) ? Color.blue.opacity(0.2) : Color.white).overlay(RoundedRectangle(cornerRadius: 3).stroke(pitchClass == tonic ? Color.orange : .gray))
                     Text(MusicTheory.noteName(pitch)).font(.caption2)
-                }.frame(width: 25, height: 105)
+                }.frame(width: 25, height: keyHeight)
             }
         }.padding(10).background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }

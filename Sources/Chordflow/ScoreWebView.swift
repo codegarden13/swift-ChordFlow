@@ -3,6 +3,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
+struct ScoreNoteSelection: Equatable {
+    var trackIndex: Int
+    var noteIndex: Int
+    var measure: Int
+    var pitchIndex: Int
+    var midi: Int
+}
+
 @MainActor
 final class ScoreController: ObservableObject {
     enum Command {
@@ -22,7 +30,13 @@ final class ScoreController: ObservableObject {
     @Published private(set) var measureCount = 0
     @Published private(set) var interactionCount = 0
     @Published private(set) var errorMessage: String?
+    @Published private(set) var selectedNote: ScoreNoteSelection?
+    var transposeHandler: ((ScoreNoteSelection, Int) -> Void)?
+    var selectionHandler: ((ScoreNoteSelection) -> Void)?
     private weak var webView: WKWebView?
+    private var highlightedChord: (measure: Int, pitches: [Int])?
+    private var selectedPitch: Int?
+    private var selectedNoteColor = "#0a84ff"
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
@@ -34,9 +48,46 @@ final class ScoreController: ObservableObject {
         measureCount = max(0, measures)
         isReady = true
         errorMessage = nil
+        applyHighlight()
+        applySelectedNoteColor()
+        if selectedPitch != nil { applySelectedPitch() } else { applySelectedNote() }
     }
 
     func interact() { interactionCount &+= 1 }
+
+    func selectNote(_ selection: ScoreNoteSelection) { selectedNote = selection; selectedPitch = nil; selectionHandler?(selection) }
+
+    func clearSelectedNote() { selectedNote = nil; selectedPitch = nil }
+
+    func requestTranspose(_ selection: ScoreNoteSelection, semitones: Int) {
+        guard abs(semitones) == 1 else { report("Ungültiger Transpositionsschritt: \(semitones)"); return }
+        transposeHandler?(selection, semitones)
+    }
+
+    func updateSelectedNote(_ selection: ScoreNoteSelection) { selectedNote = selection; applySelectedNote() }
+
+    func updateSelectedPitch(_ midi: Int) {
+        selectedNote = nil
+        selectedPitch = midi
+        applySelectedPitch()
+    }
+
+    func setSelectedNoteColor(_ cssColor: String) {
+        selectedNoteColor = cssColor
+        applySelectedNoteColor()
+    }
+
+    private func applySelectedNoteColor() {
+        guard let webView, isReady else { return }
+        webView.callAsyncJavaScript(
+            "return CartoGraphABC.setEditedSelectionColor(color)",
+            arguments: ["color": selectedNoteColor],
+            in: nil,
+            in: .page
+        ) { [weak self] result in
+            if case .failure(let error) = result { DispatchQueue.main.async { self?.report("Auswahlfarbe fehlgeschlagen: \(error.localizedDescription)") } }
+        }
+    }
 
     func report(_ text: String) {
         NSLog("Chordflow score error: %@", text)
@@ -61,6 +112,61 @@ final class ScoreController: ObservableObject {
             in: .page
         ) { _ in }
     }
+
+    func highlightChord(measure: Int, pitches: [Int]) {
+        guard measure >= 0 else { return }
+        highlightedChord = (measure, pitches)
+        applyHighlight()
+    }
+
+    func clearHighlight() {
+        highlightedChord = nil
+        guard let webView, isReady else { return }
+        webView.callAsyncJavaScript("return CartoGraphABC.clearSelection()", arguments: [:], in: nil, in: .page) { _ in }
+    }
+
+    private func applyHighlight() {
+        guard let webView, isReady, let highlightedChord else { return }
+        webView.callAsyncJavaScript(
+            "return CartoGraphABC.highlightChord(measure, pitches)",
+            arguments: ["measure": highlightedChord.measure, "pitches": highlightedChord.pitches],
+            in: nil,
+            in: .page
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result { case .success: self?.errorMessage = nil; case .failure(let error): self?.report("Akkordmarkierung fehlgeschlagen: \(error.localizedDescription)") }
+            }
+        }
+    }
+
+    private func applySelectedNote() {
+        guard let webView, isReady, let selectedNote else { return }
+        webView.callAsyncJavaScript(
+            "return CartoGraphABC.showEditedSelection(selection)",
+            arguments: ["selection": ["trackIndex": selectedNote.trackIndex, "noteIndex": selectedNote.noteIndex, "measure": selectedNote.measure, "pitchIndex": selectedNote.pitchIndex, "midi": selectedNote.midi]],
+            in: nil,
+            in: .page
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result { case .success: self?.errorMessage = nil; case .failure(let error): self?.report("Notenauswahl fehlgeschlagen: \(error.localizedDescription)") }
+            }
+        }
+    }
+
+    private func applySelectedPitch() {
+        guard let webView, isReady, let selectedPitch else { return }
+        webView.callAsyncJavaScript(
+            "return CartoGraphABC.showPitchSelection(midi)",
+            arguments: ["midi": selectedPitch],
+            in: nil,
+            in: .page
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result { case .success: self?.errorMessage = nil; case .failure(let error): self?.report("Tonhöhenauswahl fehlgeschlagen: \(error.localizedDescription)") }
+            }
+        }
+    }
+
 }
 
 struct ScoreWebView: NSViewRepresentable {
@@ -74,7 +180,7 @@ struct ScoreWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
-        for name in ["abcNotationHeight", "abcNotationReady", "abcNotationMIDIExport", "abcNotationInteraction"] {
+        for name in ["abcNotationHeight", "abcNotationReady", "abcNotationMIDIExport", "abcNotationInteraction", "abcNotationSelection", "abcNotationTranspose"] {
             configuration.userContentController.add(context.coordinator, name: name)
         }
         let view = WKWebView(frame: .zero, configuration: configuration)
@@ -109,12 +215,12 @@ struct ScoreWebView: NSViewRepresentable {
         <style>
         *{box-sizing:border-box}html,body{margin:0;background:transparent;color:CanvasText;font-family:-apple-system;overflow:hidden}body{padding:8px}
         .cartograph-abc{width:100%;padding:12px;border:1px solid color-mix(in srgb,currentColor 14%,transparent);border-radius:10px;background:color-mix(in srgb,Canvas 96%,CanvasText 4%)}
-        .cartograph-abc--compact{width:320px!important;max-width:100%;height:250px;display:block!important;padding:18px;overflow:hidden;position:relative}
-        .cartograph-abc--compact svg{top:58px!important;transform:none}
+        .cartograph-abc--compact{width:320px!important;max-width:100%;height:205px;display:block!important;padding:18px;overflow:hidden;position:relative}
+        .cartograph-abc--compact svg{top:48px!important;transform:none}
         .cartograph-abc-compact-header{position:absolute;z-index:1;top:14px;left:18px;right:18px;display:flex;flex-direction:column;align-items:center;line-height:1.05;pointer-events:none}
         .cartograph-abc-compact-symbol{font:700 26px -apple-system,BlinkMacSystemFont,sans-serif}.cartograph-abc-compact-title{margin-top:3px;color:color-mix(in srgb,currentColor 68%,transparent);font-size:12px}
         .cartograph-abc svg{display:block;max-width:100%;height:auto}.abcjs-note,.abcjs-rest{cursor:pointer}
-        .cartograph-abc-playing,.cartograph-abc-playing *{fill:#ff3b30!important;stroke:#ff3b30!important}.cartograph-abc-midi-live,.cartograph-abc-midi-live *{fill:#0a84ff!important;stroke:#0a84ff!important}
+        .cartograph-abc-selected-measure,.cartograph-abc-selected-measure *{fill:#ff9f0a!important;stroke:#ff9f0a!important}.cartograph-abc-playing,.cartograph-abc-playing *,.cartograph-abc-selected-chord,.cartograph-abc-selected-chord *{fill:#ff3b30!important;stroke:#ff3b30!important}.cartograph-abc-midi-live,.cartograph-abc-midi-live *{fill:#0a84ff!important;stroke:#0a84ff!important}.cartograph-abc-edit-selected{filter:drop-shadow(0 0 1px #fff) drop-shadow(0 0 3px #007aff)}.cartograph-abc-edit-selected,.cartograph-abc-edit-selected *{fill:var(--cartograph-edit-color,#0a84ff)!important;stroke:var(--cartograph-edit-color,#0a84ff)!important}
         .cartograph-abc--error{color:#b42318}.cartograph-abc-guide--middle{stroke:#af52de;stroke-width:2;opacity:.55}.cartograph-abc-guide--g{stroke:#007aff;stroke-width:2.4;opacity:.85}.cartograph-abc-guide-label{font:700 9px -apple-system;text-anchor:end;paint-order:stroke fill;stroke:Canvas;stroke-width:3px}.cartograph-abc-guide-label--middle{fill:#af52de}.cartograph-abc-guide-label--g{fill:#007aff}
         </style><script src="abcjs-basic-6.7.2.min.js"></script></head><body>
         <div class="cartograph-abc" data-cartograph-abc data-source="\(encoded)"></div><script src="cartograph-abc.js"></script>
@@ -143,9 +249,29 @@ struct ScoreWebView: NSViewRepresentable {
                 guard let body = message.body as? [String: Any], let count = body["measures"] as? NSNumber else { return report("Ungültiger Bereitschaftsstatus.") }
                 controller.ready(measures: count.intValue)
             case "abcNotationInteraction": controller.interact()
+            case "abcNotationSelection": receiveSelection(message.body)
+            case "abcNotationTranspose": receiveTranspose(message.body)
             case "abcNotationMIDIExport": exportMIDI(message.body)
             default: report("Unbekannte Partiturmeldung: \(message.name)")
             }
+        }
+
+        private func receiveSelection(_ body: Any) {
+            guard let selection = Self.selection(from: body) else { return report("Ungültige Notenauswahl aus der Partitur.") }
+            controller.selectNote(selection)
+        }
+
+        private func receiveTranspose(_ body: Any) {
+            guard let value = body as? [String: Any], let selection = Self.selection(from: value["selection"] as Any), let delta = value["delta"] as? NSNumber else { return report("Ungültige Notentransposition aus der Partitur.") }
+            controller.requestTranspose(selection, semitones: delta.intValue)
+        }
+
+        private static func selection(from body: Any) -> ScoreNoteSelection? {
+            guard let value = body as? [String: Any],
+                  let track = value["trackIndex"] as? NSNumber, let note = value["noteIndex"] as? NSNumber,
+                  let measure = value["measure"] as? NSNumber, let pitch = value["pitchIndex"] as? NSNumber,
+                  let midi = value["midi"] as? NSNumber else { return nil }
+            return ScoreNoteSelection(trackIndex: track.intValue, noteIndex: note.intValue, measure: measure.intValue, pitchIndex: pitch.intValue, midi: midi.intValue)
         }
 
         private func exportMIDI(_ body: Any) {

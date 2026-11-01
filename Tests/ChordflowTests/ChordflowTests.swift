@@ -31,8 +31,8 @@ final class ChordflowTests: XCTestCase {
         let abc = ABCScoreBuilder.build(score: score, scene: scene, tracks: tracks)
         XCTAssertTrue(abc.contains("Q:1/4=128"))
         XCTAssertEqual(abc.components(separatedBy: "V:v").count - 1, 3)
-        XCTAssertTrue(abc.contains("V:v1 name=\"Bass\" clef=bass"))
-        XCTAssertTrue(abc.contains("V:v2 name=\"Melodie\" clef=treble"))
+        XCTAssertTrue(abc.contains("V:v1 name=\"Bass\" subname=\"Akkordе\" clef=bass"))
+        XCTAssertTrue(abc.contains("V:v2 name=\"Melodie\" subname=\"Akkordе\" clef=treble"))
     }
 
     func testScaleAndChordTheory() {
@@ -41,6 +41,23 @@ final class ChordflowTests: XCTestCase {
         let chord = TheoryChord(root: 0, quality: .major7)
         XCTAssertEqual(chord.symbol, "Cmaj7")
         XCTAssertEqual(chord.intervalLabels, ["1", "3", "5", "7"])
+    }
+
+    func testToneAnalysisExplainsSharedChordAndTensionRoles() {
+        let chord = TheoryChord(root: 9, quality: .major, pitches: [69, 73, 76])
+        XCTAssertEqual(MusicTheory.commonScaleTones(tonic: 9, kinds: [.blues, .minorPentatonic]), [0, 2, 4, 7, 9])
+        XCTAssertEqual(MusicTheory.analyzeTone(69, tonic: 9, sceneScale: .blues, trackScale: .minorPentatonic, chord: chord).role, .chordTone)
+        XCTAssertEqual(MusicTheory.analyzeTone(73, tonic: 9, sceneScale: .blues, trackScale: .minorPentatonic, chord: chord).role, .chordColor)
+        XCTAssertEqual(MusicTheory.analyzeTone(71, tonic: 9, sceneScale: .blues, trackScale: .minorPentatonic, chord: chord).role, .tension)
+    }
+
+    func testVoiceLeadingFindsCommonTonesAndSemitoneResolutions() {
+        let cMajor = TheoryChord(root: 0, quality: .major, pitches: [60, 64, 67])
+        let fMajor = TheoryChord(root: 5, quality: .major, pitches: [60, 65, 69])
+        let analysis = MusicTheory.voiceLeading(from: cMajor, to: fMajor)
+
+        XCTAssertEqual(analysis.commonPitchClasses, [0])
+        XCTAssertEqual(analysis.semitoneMoves.map { [$0.from, $0.to] }, [[4, 5]])
     }
 
     func testChordEventsPersistAndDriveABCChordTrack() throws {
@@ -110,6 +127,49 @@ final class ChordflowTests: XCTestCase {
         let scene = ScoreScene(id: 1, scoreID: 1, title: "Test", tempo: 120, position: 0)
         XCTAssertTrue(ABCScoreBuilder.singleChord(TheoryChord(root: 0, quality: .major, pitches: [48, 52, 55]), scene: scene).contains("V:chord clef=bass"))
         XCTAssertTrue(ABCScoreBuilder.singleChord(TheoryChord(root: 0, quality: .major, pitches: [60, 64, 67]), scene: scene).contains("V:chord clef=treble"))
+    }
+
+    func testSingleChordSeparatesForeignTonesIntoColoredVoice() {
+        let scene = ScoreScene(id: 2, scoreID: 1, title: "Intro", tempo: 120, position: 0, tonic: 0, scale: .major)
+        let abc = ABCScoreBuilder.singleChord(TheoryChord(root: 2, quality: .major7, pitches: [57, 61, 62, 66]), scene: scene)
+        XCTAssertTrue(abc.contains("%%score ( chord foreign )"))
+        XCTAssertTrue(abc.contains("%%voicecolor orange"))
+        XCTAssertTrue(abc.contains("[V:foreign] [^C^F]4"))
+    }
+
+    func testABCNoteEditorReplacesSingleAndChordNotes() {
+        XCTAssertEqual(ABCNoteEditor.replacingNote(in: "C D E G |", eventIndex: 1, pitchIndex: 0, with: 63), "C ^D E G |")
+        XCTAssertEqual(ABCNoteEditor.replacingNote(in: "[CEG]4 |", eventIndex: 0, pitchIndex: 1, with: 65), "[CFG]4 |")
+    }
+
+    func testCustomBassPitchPersistsAndDrivesScore() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let scoreID = try database.createScore()
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        _ = try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 0, quality: .major))
+        var event = try XCTUnwrap(database.chordEvents(sceneID: scene.id).first)
+        event.bassPitch = 37; try database.updateChord(event)
+        let persisted = try XCTUnwrap(database.chordEvents(sceneID: scene.id).first)
+        XCTAssertEqual(persisted.bassPitch, 37)
+        let abc = ABCScoreBuilder.build(score: Score(id: scoreID, title: "Set"), scene: scene, tracks: try database.tracks(sceneID: scene.id), chords: [persisted])
+        XCTAssertTrue(abc.contains("^C,,4 |"))
+    }
+
+    func testTrackEndModePersistsAndFitsSceneTimeline() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let scoreID = try database.createScore()
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        var melody = try XCTUnwrap(database.tracks(sceneID: scene.id).first { $0.name == "Melodie" })
+        melody.endMode = .loop; try database.updateTrack(melody, scoreID: scoreID)
+        XCTAssertEqual(try database.tracks(sceneID: scene.id).first { $0.id == melody.id }?.endMode, .loop)
+        XCTAssertEqual(ABCTrackTiming.duration(of: "C D E G |"), 4)
+        XCTAssertEqual(ABCTrackTiming.duration(of: ABCTrackTiming.fitted("C D E G |", to: 10, mode: .loop)), 10)
+        XCTAssertEqual(ABCTrackTiming.fitted("C D E G |", to: 6, mode: .pad), "C D E G | z2 |")
+        XCTAssertEqual(ABCTrackTiming.fitted("C D E G |", to: 16, mode: .pad), "C D E G | z4 | z4 | z4 |")
     }
 
     func testChordProgressionGeneratesChordAndBassVoices() throws {

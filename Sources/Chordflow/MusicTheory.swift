@@ -79,7 +79,78 @@ struct ChordEvent: Identifiable, Equatable, Sendable {
     var quality: ChordQuality
     var pitches: [Int]
     var beats: Int
+    var bassPitch: Int? = nil
     var chord: TheoryChord { TheoryChord(root: root, quality: quality, pitches: pitches) }
+}
+
+enum ToneRole: Equatable, Sendable {
+    case chordTone, chordColor, common, scene, track, tension
+}
+
+struct ToneAnalysis: Equatable, Sendable {
+    let role: ToneRole
+    let title: String
+    let explanation: String
+}
+
+struct VoiceLeadingAnalysis: Equatable, Sendable {
+    let commonPitchClasses: [Int]
+    let semitoneMoves: [(from: Int, to: Int)]
+
+    static func == (lhs: VoiceLeadingAnalysis, rhs: VoiceLeadingAnalysis) -> Bool {
+        lhs.commonPitchClasses == rhs.commonPitchClasses && lhs.semitoneMoves.map { [$0.from, $0.to] } == rhs.semitoneMoves.map { [$0.from, $0.to] }
+    }
+}
+
+enum ABCNoteEditor {
+    static func replacingNote(in source: String, eventIndex: Int, pitchIndex: Int, with midi: Int) -> String? {
+        let characters = Array(source)
+        var event = 0, index = 0
+        var quoted = false
+        while index < characters.count {
+            if characters[index] == "\"" { quoted.toggle(); index += 1; continue }
+            if quoted { index += 1; continue }
+            if characters[index] == "[", let end = characters[(index + 1)...].firstIndex(of: "]") {
+                let contentStart = index + 1
+                if contentStart < end, characters[contentStart] != "V", characters[contentStart] != "P" {
+                    let ranges = noteRanges(in: characters, from: contentStart, to: end)
+                    if !ranges.isEmpty {
+                        if event == eventIndex, ranges.indices.contains(pitchIndex) { return replacing(characters, range: ranges[pitchIndex], with: MusicTheory.abcNote(midi)) }
+                        event += 1
+                    }
+                }
+                index = end + 1; continue
+            }
+            if let range = noteRange(in: characters, at: index, limit: characters.count) {
+                if event == eventIndex, pitchIndex == 0 { return replacing(characters, range: range, with: MusicTheory.abcNote(midi)) }
+                event += 1; index = range.upperBound; continue
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    private static func noteRanges(in characters: [Character], from start: Int, to end: Int) -> [Range<Int>] {
+        var result: [Range<Int>] = [], index = start
+        while index < end {
+            if let range = noteRange(in: characters, at: index, limit: end) { result.append(range); index = range.upperBound }
+            else { index += 1 }
+        }
+        return result
+    }
+
+    private static func noteRange(in characters: [Character], at start: Int, limit: Int) -> Range<Int>? {
+        var index = start
+        while index < limit, "^_=".contains(characters[index]) { index += 1 }
+        guard index < limit, "ABCDEFGabcdefg".contains(characters[index]) else { return nil }
+        index += 1
+        while index < limit, characters[index] == "," || characters[index] == "'" { index += 1 }
+        return start..<index
+    }
+
+    private static func replacing(_ characters: [Character], range: Range<Int>, with replacement: String) -> String {
+        String(characters[..<range.lowerBound]) + replacement + String(characters[range.upperBound...])
+    }
 }
 
 enum MusicTheory {
@@ -94,6 +165,50 @@ enum MusicTheory {
     static func scale(tonic: Int, kind: ScaleKind) -> [Int] { kind.intervals.map { normalized(tonic + $0) } }
     static func scaleNames(tonic: Int, kind: ScaleKind) -> [String] { scale(tonic: tonic, kind: kind).map { noteName($0, prefersFlats: prefersFlats(tonic: tonic)) } }
     static func contains(_ pitch: Int, tonic: Int, kind: ScaleKind) -> Bool { scale(tonic: tonic, kind: kind).contains(normalized(pitch)) }
+    static func commonScaleTones(tonic: Int, kinds: [ScaleKind]) -> [Int] {
+        guard let first = kinds.first else { return [] }
+        return kinds.dropFirst().reduce(Set(scale(tonic: tonic, kind: first))) { result, kind in
+            result.intersection(scale(tonic: tonic, kind: kind))
+        }.sorted()
+    }
+    static func analyzeTone(_ pitch: Int, tonic: Int, sceneScale: ScaleKind, trackScale: ScaleKind, chord: TheoryChord?) -> ToneAnalysis {
+        let inScene = contains(pitch, tonic: tonic, kind: sceneScale)
+        let inTrack = contains(pitch, tonic: tonic, kind: trackScale)
+        let inChord = chord?.pitches.contains { normalized($0) == normalized(pitch) } ?? false
+        let name = noteName(pitch, prefersFlats: prefersFlats(tonic: tonic))
+        if inChord, let chord {
+            let interval = intervalName(normalized(pitch - chord.root))
+            if inScene && inTrack {
+                return ToneAnalysis(role: .chordTone, title: "Akkordton", explanation: "\(name) ist die \(interval) von \(chord.symbol) und liegt zugleich in Szenen- und Spurtonleiter.")
+            }
+            let missing = !inScene && !inTrack ? "Szenen- und Spurtonleiter" : !inScene ? "Szenentonleiter" : "Spurtonleiter"
+            return ToneAnalysis(role: .chordColor, title: "Akkordfarbe", explanation: "\(name) liegt außerhalb der \(missing), ist aber als \(interval) von \(chord.symbol) harmonisch erklärt.")
+        }
+        if inScene && inTrack {
+            return ToneAnalysis(role: .common, title: "Gemeinsamer Ton", explanation: "\(name) gehört zur Szenen- und Spurtonleiter und eignet sich als stabiler Verbindungston.")
+        }
+        if inScene {
+            return ToneAnalysis(role: .scene, title: "Szenenton", explanation: "\(name) gehört zum gemeinsamen Szenenklang, liegt aber außerhalb der gewählten Spurtonleiter.")
+        }
+        if inTrack {
+            return ToneAnalysis(role: .track, title: "Spurton", explanation: "\(name) gehört zur Spurtonleiter, erweitert aber den gemeinsamen Szenenklang.")
+        }
+        return ToneAnalysis(role: .tension, title: "Offene Spannung", explanation: "\(name) gehört weder zum aktuellen Akkord noch zur Szenen- oder Spurtonleiter. Entscheidend ist seine Auflösung in den nächsten Ton.")
+    }
+    static func voiceLeading(from source: TheoryChord, to destination: TheoryChord) -> VoiceLeadingAnalysis {
+        let sourceClasses = Set(source.pitches.map(normalized))
+        let destinationClasses = Set(destination.pitches.map(normalized))
+        let common = sourceClasses.intersection(destinationClasses).sorted()
+        var moves: [(Int, Int)] = []
+        for pitch in sourceClasses.subtracting(common).sorted() {
+            let targets = destinationClasses.subtracting(common).filter { target in
+                let distance = abs(target - pitch)
+                return min(distance, 12 - distance) == 1
+            }
+            if let target = targets.sorted().first { moves.append((pitch, target)) }
+        }
+        return VoiceLeadingAnalysis(commonPitchClasses: common, semitoneMoves: moves)
+    }
     static func nearestScalePitch(to pitch: Int, tonic: Int, kind: ScaleKind) -> Int {
         guard !contains(pitch, tonic: tonic, kind: kind) else { return pitch }
         for distance in 1...6 {
