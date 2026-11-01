@@ -1,3 +1,4 @@
+import AppHelpKit
 import SwiftUI
 
 @main
@@ -14,12 +15,7 @@ struct ChordflowApp: App {
             }
 
         Window("App-Hilfe", id: "app-help") {
-            AppHelpView(repositoryName: "swift-Chordflow", topics: [
-                .init(id: "start", title: "Mit Chordflow beginnen"),
-                .init(id: "abc-und-wiedergabe", title: "Partituren und Wiedergabe"),
-                .init(id: "musiktheorie", title: "Akkorde und Musiktheorie"),
-                .init(id: "midi-und-dateien", title: "MIDI und Speicherung"),
-            ])
+            AppHelpView(repositoryName: "swift-ChordFlow")
         }
     }
 }
