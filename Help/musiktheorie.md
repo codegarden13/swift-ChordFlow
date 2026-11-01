@@ -6,8 +6,6 @@ order: 25
 keywords: [Akkord, Tonleiter, Quintenzirkel, Voicing, Arrangement]
 ---
 
-# Akkorde und Musiktheorie
-
 Jede Szene besitzt einen Grundton und eine Tonleiter. Wähle beides oberhalb des Arbeitsbereichs. Eine Spur verwendet standardmäßig **Wie Szene**; im Bereich **Spuren** kannst du ihr für Experimente eine eigene Tonleiter zuweisen.
 
 ## Akkordlabor

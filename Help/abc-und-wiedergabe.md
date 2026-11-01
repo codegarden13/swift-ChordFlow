@@ -6,8 +6,6 @@ order: 20
 keywords: [ABC, Noten, Akkord, Takt, Wiedergabe]
 ---
 
-# Partituren und Wiedergabe
-
 Jede Spur enthält den musikalischen ABC-Inhalt ohne eigenen Kopf, zum Beispiel:
 
 ```text
