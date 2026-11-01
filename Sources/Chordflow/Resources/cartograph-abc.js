@@ -210,6 +210,22 @@
     return true;
   }
 
+  function setChordStyles(styles) {
+    const classes = ["cartograph-abc-chord-standard", "cartograph-abc-chord-inversion", "cartograph-abc-chord-altered"];
+    document.querySelectorAll(classes.map(name => `.${name}`).join(",")).forEach(element => {
+      classes.forEach(name => element.classList.remove(name));
+    });
+    const sequence = score().sequence;
+    (styles || []).forEach(style => {
+      const role = String(style.role || "");
+      if (!/^(standard|inversion|altered)$/.test(role)) throw new Error(`Unbekannte Akkordfarbe '${role}'.`);
+      const note = sequence.notes.find(candidate => candidate.trackIndex === Number(style.trackIndex) && candidate.noteIndex === Number(style.noteIndex));
+      if (!note) throw new Error(`Akkord ${Number(style.noteIndex) + 1} konnte in Spur ${Number(style.trackIndex) + 1} nicht eingefärbt werden.`);
+      note.elements.forEach(element => element.classList.add(`cartograph-abc-chord-${role}`));
+    });
+    return true;
+  }
+
   async function selectEditableNote(element, analysis) {
     const note = score().sequence.elementNotes.get(element);
     if (!note) return;
@@ -504,6 +520,7 @@
     showEditedSelection,
     showPitchSelection,
     setEditedSelectionColor,
+    setChordStyles,
     measureCount,
     isSingleChord,
     singleChord,

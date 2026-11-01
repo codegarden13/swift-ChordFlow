@@ -60,6 +60,16 @@ final class ChordflowTests: XCTestCase {
         XCTAssertEqual(analysis.semitoneMoves.map { [$0.from, $0.to] }, [[4, 5]])
     }
 
+    func testVoicingAnalysisDistinguishesAlterationAndInversion() {
+        let standard = TheoryChord(root: 11, quality: .major7, pitches: [71, 75, 78, 82])
+        let altered = TheoryChord(root: 11, quality: .major7, pitches: [66, 70, 71, 74])
+        let inversion = TheoryChord(root: 11, quality: .major7, pitches: [66, 70, 71, 75])
+
+        XCTAssertEqual(MusicTheory.analyzeVoicing(standard).role, .standard)
+        XCTAssertEqual(MusicTheory.analyzeVoicing(altered), ChordVoicingAnalysis(role: .altered, description: "Variante: D statt D♯ · Lage F♯4–D5"))
+        XCTAssertEqual(MusicTheory.analyzeVoicing(inversion), ChordVoicingAnalysis(role: .inversion, description: "2. Umkehrung · Lage F♯4–D♯5"))
+    }
+
     func testChordEventsPersistAndDriveABCChordTrack() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }

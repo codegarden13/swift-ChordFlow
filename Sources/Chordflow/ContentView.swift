@@ -225,6 +225,7 @@ struct ContentView: View {
 
     private func preview(_ selectedScore: Score, scene selectedScene: ScoreScene) -> some View {
         let abc = ABCScoreBuilder.build(score: selectedScore, scene: selectedScene, tracks: library.tracks, chords: library.chordEvents)
+        let chordStyles = scoreChordStyles()
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
@@ -239,9 +240,18 @@ struct ContentView: View {
                 }.buttonStyle(.bordered).disabled(!score.isReady)
                 midiStatus
                 selectedNoteStatus(scene: selectedScene)
-                ScoreWebView(abc: abc, height: $scoreHeight, controller: score).frame(height: min(max(scoreHeight, 220), 1_200))
+                if !chordStyles.isEmpty { ChordColorLegend() }
+                ScoreWebView(abc: abc, height: $scoreHeight, controller: score, chordStyles: chordStyles).frame(height: min(max(scoreHeight, 220), 1_200))
                 if let error = score.errorMessage ?? midi.errorMessage { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
             }.padding(18)
+        }
+    }
+
+    private func scoreChordStyles() -> [ScoreChordStyle] {
+        guard let trackIndex = library.tracks.firstIndex(where: { $0.name.compare("Akkorde", options: .caseInsensitive) == .orderedSame }) else { return [] }
+        return library.chordEvents.enumerated().map { noteIndex, event in
+            let analysis = MusicTheory.analyzeVoicing(event.chord)
+            return ScoreChordStyle(trackIndex: trackIndex, noteIndex: noteIndex, role: analysis.role)
         }
     }
 
@@ -346,5 +356,21 @@ struct ContentView: View {
                 Text(midi.notes.isEmpty ? "Spiele auf dem Keyboard …" : midi.notes.map { MusicNames.note($0.number) }.joined(separator: " · ")).font(.callout.monospacedDigit()).foregroundStyle(midi.notes.isEmpty ? .secondary : .primary)
             }
         }
+    }
+}
+
+private struct ChordColorLegend: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            legend("Grundstellung", color: .blue)
+            legend("Umkehrung", color: .purple)
+            legend("veränderte Akkordstruktur", color: .orange)
+            Text("Die Auswahl wird weiterhin rot hervorgehoben.").foregroundStyle(.secondary)
+        }
+        .font(.caption)
+    }
+
+    private func legend(_ title: String, color: Color) -> some View {
+        Label { Text(title) } icon: { Circle().fill(color).frame(width: 8, height: 8) }
     }
 }

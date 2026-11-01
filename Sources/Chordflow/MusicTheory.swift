@@ -102,6 +102,14 @@ struct VoiceLeadingAnalysis: Equatable, Sendable {
     }
 }
 
+enum ChordVoicingRole: String, Equatable, Sendable { case standard, inversion, altered }
+
+struct ChordVoicingAnalysis: Equatable, Sendable {
+    let role: ChordVoicingRole
+    let description: String
+    var isAltered: Bool { role == .altered }
+}
+
 enum ABCNoteEditor {
     static func replacingNote(in source: String, eventIndex: Int, pitchIndex: Int, with midi: Int) -> String? {
         let characters = Array(source)
@@ -208,6 +216,35 @@ enum MusicTheory {
             if let target = targets.sorted().first { moves.append((pitch, target)) }
         }
         return VoiceLeadingAnalysis(commonPitchClasses: common, semitoneMoves: moves)
+    }
+    static func analyzeVoicing(_ chord: TheoryChord, prefersFlats: Bool = false) -> ChordVoicingAnalysis {
+        let expected = Set(chord.quality.intervals.map { normalized(chord.root + $0) })
+        let actual = Set(chord.pitches.map(normalized))
+        let added = actual.subtracting(expected).sorted()
+        let missing = expected.subtracting(actual).sorted()
+        let range = chord.pitches.sorted()
+        let rangeText = range.first.map { low in
+            let high = range.last ?? low
+            return "Lage \(pitchName(low, prefersFlats: prefersFlats))–\(pitchName(high, prefersFlats: prefersFlats))"
+        } ?? "Leeres Voicing"
+
+        if !added.isEmpty || !missing.isEmpty {
+            let change: String
+            if added.count == 1, missing.count == 1 {
+                change = "\(noteName(added[0], prefersFlats: prefersFlats)) statt \(noteName(missing[0], prefersFlats: prefersFlats))"
+            } else {
+                let additions = added.isEmpty ? nil : "hinzu: \(added.map { noteName($0, prefersFlats: prefersFlats) }.joined(separator: ", "))"
+                let removals = missing.isEmpty ? nil : "fehlt: \(missing.map { noteName($0, prefersFlats: prefersFlats) }.joined(separator: ", "))"
+                change = [additions, removals].compactMap { $0 }.joined(separator: " · ")
+            }
+            return ChordVoicingAnalysis(role: .altered, description: "Variante: \(change) · \(rangeText)")
+        }
+
+        let bassInterval = chord.pitches.first.map { normalized($0 - chord.root) }
+        let inversion = bassInterval.flatMap { chord.quality.intervals.firstIndex(of: $0) }
+        let position = inversion == 0 ? "Grundstellung" : inversion.map { "\($0). Umkehrung" } ?? "Eigenes Voicing"
+        let role: ChordVoicingRole = inversion == 0 ? .standard : .inversion
+        return ChordVoicingAnalysis(role: role, description: "\(position) · \(rangeText)")
     }
     static func nearestScalePitch(to pitch: Int, tonic: Int, kind: ScaleKind) -> Int {
         guard !contains(pitch, tonic: tonic, kind: kind) else { return pitch }

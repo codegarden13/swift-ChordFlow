@@ -11,6 +11,12 @@ struct ScoreNoteSelection: Equatable {
     var midi: Int
 }
 
+struct ScoreChordStyle: Equatable {
+    let trackIndex: Int
+    let noteIndex: Int
+    let role: ChordVoicingRole
+}
+
 @MainActor
 final class ScoreController: ObservableObject {
     enum Command {
@@ -37,6 +43,7 @@ final class ScoreController: ObservableObject {
     private var highlightedChord: (measure: Int, pitches: [Int])?
     private var selectedPitch: Int?
     private var selectedNoteColor = "#0a84ff"
+    private var chordStyles: [ScoreChordStyle] = []
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
@@ -49,11 +56,31 @@ final class ScoreController: ObservableObject {
         isReady = true
         errorMessage = nil
         applyHighlight()
+        applyChordStyles()
         applySelectedNoteColor()
         if selectedPitch != nil { applySelectedPitch() } else { applySelectedNote() }
     }
 
     func interact() { interactionCount &+= 1 }
+
+    func setChordStyles(_ styles: [ScoreChordStyle]) {
+        guard chordStyles != styles else { return }
+        chordStyles = styles
+        applyChordStyles()
+    }
+
+    private func applyChordStyles() {
+        guard let webView, isReady else { return }
+        let values = chordStyles.map { ["trackIndex": $0.trackIndex, "noteIndex": $0.noteIndex, "role": $0.role.rawValue] as [String: Any] }
+        webView.callAsyncJavaScript(
+            "return CartoGraphABC.setChordStyles(styles)",
+            arguments: ["styles": values],
+            in: nil,
+            in: .page
+        ) { [weak self] result in
+            if case .failure(let error) = result { DispatchQueue.main.async { self?.report("Akkordfarben fehlgeschlagen: \(error.localizedDescription)") } }
+        }
+    }
 
     func selectNote(_ selection: ScoreNoteSelection) { selectedNote = selection; selectedPitch = nil; selectionHandler?(selection) }
 
@@ -173,6 +200,7 @@ struct ScoreWebView: NSViewRepresentable {
     let abc: String
     @Binding var height: CGFloat
     let controller: ScoreController
+    var chordStyles: [ScoreChordStyle] = []
 
     func makeCoordinator() -> Coordinator { Coordinator(height: $height, controller: controller) }
 
@@ -191,6 +219,7 @@ struct ScoreWebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.height = $height
+        controller.setChordStyles(chordStyles)
         guard abc != context.coordinator.loadedABC else { return }
         context.coordinator.loadedABC = abc
         webView.loadHTMLString(Self.html(abc), baseURL: Self.scoreResourceURL)
@@ -220,7 +249,7 @@ struct ScoreWebView: NSViewRepresentable {
         .cartograph-abc-compact-header{position:absolute;z-index:1;top:14px;left:18px;right:18px;display:flex;flex-direction:column;align-items:center;line-height:1.05;pointer-events:none}
         .cartograph-abc-compact-symbol{font:700 26px -apple-system,BlinkMacSystemFont,sans-serif}.cartograph-abc-compact-title{margin-top:3px;color:color-mix(in srgb,currentColor 68%,transparent);font-size:12px}
         .cartograph-abc svg{display:block;max-width:100%;height:auto}.abcjs-note,.abcjs-rest{cursor:pointer}
-        .cartograph-abc-selected-measure,.cartograph-abc-selected-measure *{fill:#ff9f0a!important;stroke:#ff9f0a!important}.cartograph-abc-playing,.cartograph-abc-playing *,.cartograph-abc-selected-chord,.cartograph-abc-selected-chord *{fill:#ff3b30!important;stroke:#ff3b30!important}.cartograph-abc-midi-live,.cartograph-abc-midi-live *{fill:#0a84ff!important;stroke:#0a84ff!important}.cartograph-abc-edit-selected{filter:drop-shadow(0 0 1px #fff) drop-shadow(0 0 3px #007aff)}.cartograph-abc-edit-selected,.cartograph-abc-edit-selected *{fill:var(--cartograph-edit-color,#0a84ff)!important;stroke:var(--cartograph-edit-color,#0a84ff)!important}
+        .cartograph-abc-chord-standard,.cartograph-abc-chord-standard *{fill:#0a84ff!important;stroke:#0a84ff!important}.cartograph-abc-chord-inversion,.cartograph-abc-chord-inversion *{fill:#bf5af2!important;stroke:#bf5af2!important}.cartograph-abc-chord-altered,.cartograph-abc-chord-altered *{fill:#ff9f0a!important;stroke:#ff9f0a!important}.cartograph-abc-selected-measure,.cartograph-abc-selected-measure *{fill:#ff9f0a!important;stroke:#ff9f0a!important}.cartograph-abc-playing,.cartograph-abc-playing *,.cartograph-abc-selected-chord,.cartograph-abc-selected-chord *{fill:#ff3b30!important;stroke:#ff3b30!important}.cartograph-abc-midi-live,.cartograph-abc-midi-live *{fill:#0a84ff!important;stroke:#0a84ff!important}.cartograph-abc-edit-selected{filter:drop-shadow(0 0 1px #fff) drop-shadow(0 0 3px #007aff)}.cartograph-abc-edit-selected,.cartograph-abc-edit-selected *{fill:var(--cartograph-edit-color,#0a84ff)!important;stroke:var(--cartograph-edit-color,#0a84ff)!important}
         .cartograph-abc--error{color:#b42318}.cartograph-abc-guide--middle{stroke:#af52de;stroke-width:2;opacity:.55}.cartograph-abc-guide--g{stroke:#007aff;stroke-width:2.4;opacity:.85}.cartograph-abc-guide-label{font:700 9px -apple-system;text-anchor:end;paint-order:stroke fill;stroke:Canvas;stroke-width:3px}.cartograph-abc-guide-label--middle{fill:#af52de}.cartograph-abc-guide-label--g{fill:#007aff}
         </style><script src="abcjs-basic-6.7.2.min.js"></script></head><body>
         <div class="cartograph-abc" data-cartograph-abc data-source="\(encoded)"></div><script src="cartograph-abc.js"></script>

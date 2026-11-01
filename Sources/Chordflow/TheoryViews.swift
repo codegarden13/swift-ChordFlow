@@ -81,12 +81,17 @@ struct TheoryWorkspaceView: View {
     }
 
     private func chordCard(_ event: ChordEvent) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let voicing = MusicTheory.analyzeVoicing(event.chord, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(event.chord.symbol).font(.title2.bold())
+                Text(event.chord.symbol).font(.title2.bold()).foregroundStyle(voicingColor(event))
                 Spacer()
                 Button("Löschen", systemImage: "xmark.circle", role: .destructive) { library.deleteChord(event.id) }.labelStyle(.iconOnly).buttonStyle(.plain)
             }
+            Label(voicing.description, systemImage: voicing.isAltered ? "waveform.badge.exclamationmark" : "pianokeys")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(voicing.isAltered ? .orange : .secondary)
+                .lineLimit(2)
             Text(MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale) ?? "chromatischer Akkord").font(.headline).foregroundStyle(functionColor(event.root))
             Text(event.pitches.map { MusicTheory.pitchName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)) }.joined(separator: " · ")).font(.caption.monospaced())
             if arrangementAnalysisMode == .voiceLeading { voiceLeadingSummary(for: event) }
@@ -105,6 +110,14 @@ struct TheoryWorkspaceView: View {
         .dropDestination(for: String.self) { values, _ in
             guard let raw = values.first, let source = Int64(raw) else { return false }
             library.moveChord(source, before: event.id); return true
+        }
+    }
+
+    private func voicingColor(_ event: ChordEvent) -> Color {
+        switch MusicTheory.analyzeVoicing(event.chord).role {
+        case .standard: .blue
+        case .inversion: .purple
+        case .altered: .orange
         }
     }
 
