@@ -37,12 +37,15 @@ final class ScoreController: ObservableObject {
     @Published private(set) var measureCount = 0
     @Published private(set) var interactionCount = 0
     @Published private(set) var errorMessage: String?
-    @Published private(set) var selectedNote: ScoreNoteSelection?
+    @Published private(set) var selectedNotes: [ScoreNoteSelection] = []
+    var selectedNote: ScoreNoteSelection? { selectedNotes.first }
     var transposeHandler: ((ScoreNoteSelection, Int) -> Void)?
+    var multiTransposeHandler: (([ScoreNoteSelection], Int) -> Void)?
     var selectionHandler: ((ScoreNoteSelection) -> Void)?
     private weak var webView: WKWebView?
     private var highlightedChord: (measure: Int, pitches: [Int])?
     private var selectedPitch: Int?
+    private var marqueeSelectionEnabled = false
     private var selectedNoteColor = "#0a84ff"
     private var chordStyles: [ScoreChordStyle] = []
 
@@ -59,6 +62,7 @@ final class ScoreController: ObservableObject {
         applyHighlight()
         applyChordStyles()
         applySelectedNoteColor()
+        setMarqueeSelectionEnabled(marqueeSelectionEnabled)
         if selectedPitch != nil { applySelectedPitch() } else { applySelectedNote() }
     }
 
@@ -83,19 +87,36 @@ final class ScoreController: ObservableObject {
         }
     }
 
-    func selectNote(_ selection: ScoreNoteSelection) { selectedNote = selection; selectedPitch = nil; selectionHandler?(selection) }
+    func selectNote(_ selection: ScoreNoteSelection) { selectNotes([selection]) }
 
-    func clearSelectedNote() { selectedNote = nil; selectedPitch = nil }
-
-    func requestTranspose(_ selection: ScoreNoteSelection, semitones: Int) {
-        guard abs(semitones) == 1 else { report("Ungültiger Transpositionsschritt: \(semitones)"); return }
-        transposeHandler?(selection, semitones)
+    func selectNotes(_ selections: [ScoreNoteSelection]) {
+        selectedNotes = selections
+        selectedPitch = nil
+        selections.first.map { selectionHandler?($0) }
     }
 
-    func updateSelectedNote(_ selection: ScoreNoteSelection) { selectedNote = selection; applySelectedNote() }
+    func clearSelectedNote() { selectedNotes = []; selectedPitch = nil }
+
+    func requestTranspose(_ selection: ScoreNoteSelection, semitones: Int) {
+        requestTranspose([selection], semitones: semitones)
+    }
+
+    func requestTranspose(_ selections: [ScoreNoteSelection], semitones: Int) {
+        guard abs(semitones) == 1 else { report("Ungültiger Transpositionsschritt: \(semitones)"); return }
+        guard !selections.isEmpty else { report("Die Notenauswahl ist leer."); return }
+        if selections.count == 1, let selection = selections.first { transposeHandler?(selection, semitones) }
+        else { multiTransposeHandler?(selections, semitones) }
+    }
+
+    func updateSelectedNote(_ selection: ScoreNoteSelection) { updateSelectedNotes([selection]) }
+
+    func updateSelectedNotes(_ selections: [ScoreNoteSelection]) {
+        selectedNotes = selections
+        applySelectedNote()
+    }
 
     func updateSelectedPitch(_ midi: Int) {
-        selectedNote = nil
+        selectedNotes = []
         selectedPitch = midi
         applySelectedPitch()
     }
@@ -168,16 +189,34 @@ final class ScoreController: ObservableObject {
     }
 
     private func applySelectedNote() {
-        guard let webView, isReady, let selectedNote else { return }
+        guard let webView, isReady, !selectedNotes.isEmpty else { return }
+        let values = selectedNotes.map { selection in
+            ["trackIndex": selection.trackIndex, "noteIndex": selection.noteIndex, "measure": selection.measure, "pitchIndex": selection.pitchIndex, "midi": selection.midi]
+        }
         webView.callAsyncJavaScript(
-            "return CartoGraphABC.showEditedSelection(selection)",
-            arguments: ["selection": ["trackIndex": selectedNote.trackIndex, "noteIndex": selectedNote.noteIndex, "measure": selectedNote.measure, "pitchIndex": selectedNote.pitchIndex, "midi": selectedNote.midi]],
+            "return CartoGraphABC.showEditedSelections(selections)",
+            arguments: ["selections": values],
             in: nil,
             in: .page
         ) { [weak self] result in
             DispatchQueue.main.async {
                 switch result { case .success: self?.errorMessage = nil; case .failure(let error): self?.report("Notenauswahl fehlgeschlagen: \(error.localizedDescription)") }
             }
+        }
+    }
+
+    func selectMatchingNotes() {
+        guard let webView, isReady, selectedNote != nil else { report("Wähle zuerst eine Note in der Partitur aus."); return }
+        webView.callAsyncJavaScript("return CartoGraphABC.selectMatchingNotes()", arguments: [:], in: nil, in: .page) { [weak self] result in
+            if case .failure(let error) = result { DispatchQueue.main.async { self?.report("Gleiche Noten konnten nicht ausgewählt werden: \(error.localizedDescription)") } }
+        }
+    }
+
+    func setMarqueeSelectionEnabled(_ enabled: Bool) {
+        marqueeSelectionEnabled = enabled
+        guard let webView, isReady else { return }
+        webView.callAsyncJavaScript("return CartoGraphABC.setMarqueeSelectionEnabled(enabled)", arguments: ["enabled": enabled], in: nil, in: .page) { [weak self] result in
+            if case .failure(let error) = result { DispatchQueue.main.async { self?.report("Auswahlrahmen konnte nicht umgeschaltet werden: \(error.localizedDescription)") } }
         }
     }
 
@@ -263,12 +302,25 @@ struct ScoreWebView: NSViewRepresentable {
         }
 
         private func receiveSelection(_ body: Any) {
+            if let value = body as? [String: Any], let rawSelections = value["selections"] as? [Any] {
+                let selections = rawSelections.compactMap(Self.selection(from:))
+                guard selections.count == rawSelections.count, !selections.isEmpty else { return report("Ungültige Mehrfachauswahl aus der Partitur.") }
+                controller.selectNotes(selections)
+                return
+            }
             guard let selection = Self.selection(from: body) else { return report("Ungültige Notenauswahl aus der Partitur.") }
             controller.selectNote(selection)
         }
 
         private func receiveTranspose(_ body: Any) {
-            guard let value = body as? [String: Any], let selection = Self.selection(from: value["selection"] as Any), let delta = value["delta"] as? NSNumber else { return report("Ungültige Notentransposition aus der Partitur.") }
+            guard let value = body as? [String: Any], let delta = value["delta"] as? NSNumber else { return report("Ungültige Notentransposition aus der Partitur.") }
+            if let rawSelections = value["selections"] as? [Any] {
+                let selections = rawSelections.compactMap(Self.selection(from:))
+                guard selections.count == rawSelections.count, !selections.isEmpty else { return report("Ungültige gemeinsame Notentransposition aus der Partitur.") }
+                controller.requestTranspose(selections, semitones: delta.intValue)
+                return
+            }
+            guard let selection = Self.selection(from: value["selection"] as Any) else { return report("Ungültige Notentransposition aus der Partitur.") }
             controller.requestTranspose(selection, semitones: delta.intValue)
         }
 

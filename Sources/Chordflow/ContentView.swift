@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var selectedArrangementChord: ChordEvent?
     @State private var showsTitleEditor = false
     @State private var titleDraft = ""
+    @State private var usesScoreSelectionRectangle = false
     @FocusState private var titleEditorFocused: Bool
 
     var body: some View {
@@ -46,6 +47,10 @@ struct ContentView: View {
             score.transposeHandler = { [weak library, weak score] selection, semitones in
                 guard let library, let score else { return }
                 Self.transpose(selection, by: semitones, library: library, score: score)
+            }
+            score.multiTransposeHandler = { [weak library, weak score] selections, semitones in
+                guard let library, let score else { return }
+                Self.transpose(selections, by: semitones, library: library, score: score)
             }
             score.selectionHandler = { [weak library, weak score] selection in
                 guard let library, let score, let role = Self.toneRole(for: selection, library: library) else { return }
@@ -237,6 +242,19 @@ struct ContentView: View {
                         Picker("Takt", selection: $measure) { ForEach(0..<score.measureCount, id: \.self) { Text("\($0 + 1)").tag($0) } }.frame(width: 110)
                         Button("Takt abspielen", systemImage: "play.fill") { score.run(.playMeasure(measure)) }
                     }
+                    Divider().frame(height: 18)
+                    Toggle("Auswahlrahmen", systemImage: "rectangle.dashed", isOn: Binding(
+                        get: { usesScoreSelectionRectangle },
+                        set: { enabled in
+                            usesScoreSelectionRectangle = enabled
+                            score.setMarqueeSelectionEnabled(enabled)
+                        }
+                    ))
+                    .toggleStyle(.button)
+                    .help("Aktivieren und in der Partitur einen Rahmen um mehrere Noten ziehen; alternativ mit gedrückter Umschalttaste ziehen")
+                    Button("Gleiche Töne", systemImage: "equal.circle") { score.selectMatchingNotes() }
+                        .disabled(score.selectedNote == nil)
+                        .help("Alle Noten derselben Tonhöhe in der ausgewählten Notenzeile markieren")
                     Spacer()
                     Button("MIDI exportieren", systemImage: "square.and.arrow.up") { score.run(.exportMIDI) }
                 }.buttonStyle(.bordered).disabled(!score.isReady)
@@ -263,10 +281,13 @@ struct ContentView: View {
             let scale = track.scaleOverride ?? scene.scale
             let analysis = MusicTheory.analyzeTone(selection.midi, tonic: scene.tonic, sceneScale: scene.scale, trackScale: scale, chord: chord(atMeasure: selection.measure)?.chord)
             HStack(spacing: 8) {
-                Label("\(track.name): \(MusicTheory.pitchName(selection.midi, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)))", systemImage: toneIcon(analysis.role))
+                Label(score.selectedNotes.count == 1
+                      ? "\(track.name): \(MusicTheory.pitchName(selection.midi, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)))"
+                      : "\(score.selectedNotes.count) Noten ausgewählt",
+                      systemImage: toneIcon(analysis.role))
                     .foregroundStyle(toneColor(analysis.role))
-                Text("\(analysis.title): \(analysis.explanation)")
-                Text("↑/↓ verschiebt um einen Halbton").foregroundStyle(.secondary)
+                if score.selectedNotes.count == 1 { Text("\(analysis.title): \(analysis.explanation)") }
+                Text("↑/↓ verschiebt \(score.selectedNotes.count == 1 ? "die Note" : "alle gemeinsam") um einen Halbton").foregroundStyle(.secondary)
             }
             .font(.callout)
         }
@@ -341,6 +362,69 @@ struct ContentView: View {
         changedSelection.midi = newMIDI
         score.updateSelectedNote(changedSelection)
         MIDIService.shared.previewChord([newMIDI], duration: .milliseconds(500))
+    }
+
+    private static func transpose(_ selections: [ScoreNoteSelection], by semitones: Int, library: ScoreLibrary, score: ScoreController) {
+        guard !selections.isEmpty else { score.report("Die Notenauswahl ist leer."); return }
+        guard selections.allSatisfy({ library.tracks.indices.contains($0.trackIndex) }) else { score.report("Mindestens eine ausgewählte Spur existiert nicht mehr."); return }
+        guard selections.map({ $0.midi + semitones }).allSatisfy({ (0...127).contains($0) }) else { score.report("Mindestens eine Tonhöhe läge außerhalb des MIDI-Bereichs."); return }
+
+        var changedTracks: [Int: ScoreTrack] = [:]
+        var changedChords: [Int64: ChordEvent] = [:]
+        var updatedSelections: [ScoreNoteSelection] = []
+
+        for selection in selections {
+            let track = library.tracks[selection.trackIndex]
+            let newMIDI = selection.midi + semitones
+            var updated = selection
+            updated.midi = newMIDI
+            if !library.chordEvents.isEmpty, track.name.compare("Bass", options: .caseInsensitive) == .orderedSame {
+                guard library.chordEvents.indices.contains(selection.noteIndex) else { score.report("Ein ausgewählter Basston konnte keinem Akkord zugeordnet werden."); return }
+                var event = changedChords[library.chordEvents[selection.noteIndex].id] ?? library.chordEvents[selection.noteIndex]
+                event.bassPitch = newMIDI
+                changedChords[event.id] = event
+            } else if !library.chordEvents.isEmpty, track.name.compare("Akkorde", options: .caseInsensitive) == .orderedSame {
+                guard library.chordEvents.indices.contains(selection.noteIndex) else { score.report("Ein ausgewählter Akkord existiert nicht mehr."); return }
+                let original = library.chordEvents[selection.noteIndex]
+                var event = changedChords[original.id] ?? original
+                guard event.pitches.indices.contains(selection.pitchIndex) else { score.report("Ein ausgewählter Akkordton existiert nicht mehr."); return }
+                event.pitches[selection.pitchIndex] = newMIDI
+                changedChords[event.id] = event
+            } else {
+                var changed = changedTracks[selection.trackIndex] ?? track
+                guard let abc = ABCNoteEditor.replacingNote(in: changed.abc, eventIndex: selection.noteIndex, pitchIndex: selection.pitchIndex, with: newMIDI) else {
+                    score.report("Eine ausgewählte Note konnte im ABC-Text der Spur \(track.name) nicht gefunden werden."); return
+                }
+                changed.abc = abc
+                changedTracks[selection.trackIndex] = changed
+            }
+            updatedSelections.append(updated)
+        }
+
+        var sortedChords: [Int64: ChordEvent] = [:]
+        changedChords.values.forEach { event in
+            var sorted = event
+            sorted.pitches.sort()
+            sortedChords[sorted.id] = sorted
+            library.updateChord(sorted)
+        }
+        changedTracks.values.forEach(library.updateTrack)
+        var usedPitchIndices: [Int64: Set<Int>] = [:]
+        updatedSelections = updatedSelections.map { selection in
+            let track = library.tracks[selection.trackIndex]
+            guard track.name.compare("Akkorde", options: .caseInsensitive) == .orderedSame,
+                  library.chordEvents.indices.contains(selection.noteIndex) else { return selection }
+            let eventID = library.chordEvents[selection.noteIndex].id
+            guard let event = sortedChords[eventID] else { return selection }
+            let used = usedPitchIndices[eventID, default: []]
+            guard let pitchIndex = event.pitches.indices.first(where: { event.pitches[$0] == selection.midi && !used.contains($0) }) else { return selection }
+            usedPitchIndices[eventID, default: []].insert(pitchIndex)
+            var adjusted = selection
+            adjusted.pitchIndex = pitchIndex
+            return adjusted
+        }
+        score.updateSelectedNotes(updatedSelections)
+        MIDIService.shared.previewChord(updatedSelections.map(\.midi), duration: .milliseconds(500))
     }
 
     private var midiStatus: some View {
