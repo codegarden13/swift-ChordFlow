@@ -1,5 +1,4 @@
 ---
-id: abc-und-wiedergabe
 title: Partituren und Wiedergabe
 summary: ABC-Notation schreiben und vollständig oder taktweise abspielen.
 order: 20

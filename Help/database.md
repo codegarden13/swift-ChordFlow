@@ -1,5 +1,4 @@
 ---
-id: database
 title: Datenspeicherung
 summary: Datenbankstruktur und Inhalte
 order: 100

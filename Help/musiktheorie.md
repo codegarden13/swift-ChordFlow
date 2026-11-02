@@ -1,5 +1,4 @@
 ---
-id: musiktheorie
 title: Akkorde und Musiktheorie
 summary: Akkorde entwerfen, Tonleitern untersuchen und Folgen für eine Szene planen.
 order: 25

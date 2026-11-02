@@ -1,3 +1,4 @@
+import MusicTheoryUI
 import SwiftUI
 
 enum WorkspaceMode: String, CaseIterable, Identifiable {
@@ -95,11 +96,14 @@ struct TheoryWorkspaceView: View {
             Text(MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale) ?? "chromatischer Akkord").font(.headline).foregroundStyle(functionColor(event.root))
             Text(event.pitches.map { MusicTheory.pitchName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)) }.joined(separator: " · ")).font(.caption.monospaced())
             if arrangementAnalysisMode == .voiceLeading { voiceLeadingSummary(for: event) }
+            Spacer(minLength: 0)
             Stepper("\(event.beats) Zählzeiten", value: Binding(get: { event.beats }, set: { value in
                 var changed = event; changed.beats = value; library.updateChord(changed)
             }), in: 1...32)
         }
-        .padding(14).frame(maxWidth: .infinity, minHeight: 150).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220, alignment: .topLeading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture {
             selectedArrangementChord = event
@@ -140,6 +144,7 @@ struct TheoryWorkspaceView: View {
                 }
             }
             .font(.caption)
+            .lineLimit(2)
         } else {
             Text("Ende der Akkordfolge").font(.caption).foregroundStyle(.secondary)
         }
@@ -158,11 +163,14 @@ struct TheoryWorkspaceView: View {
                     Spacer()
                 }
                 HStack {
-                    Button("Umkehrung ↑") { invert(up: true) }
-                    Button("Umkehrung ↓") { invert(up: false) }
+                    Button("Lage höher ↑") { invert(up: true) }
+                        .help("Den tiefsten Akkordton eine Oktave nach oben setzen")
+                    Button("Lage tiefer ↓") { invert(up: false) }
+                        .help("Den höchsten Akkordton eine Oktave nach unten setzen")
                     Toggle("Beim Ziehen auf Szenentonleiter einrasten", isOn: $snapsToScale).toggleStyle(.switch)
                     Spacer()
                 }
+                VoicingPositionLabel(chord: chord, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))
                 Text(snapsToScale ? "Mausziehen überspringt leiterfremde Halbtöne. ↑/↓ bleibt chromatisch." : "Mausziehen und ↑/↓ verschieben chromatisch in Halbtonschritten.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
@@ -178,8 +186,12 @@ struct TheoryWorkspaceView: View {
                     pitches.sort()
                 }
                 ChordTheoryExplanation(chord: chord, scene: scene)
-                ScrollView(.horizontal, showsIndicators: true) {
-                    PianoView(pitches: pitches, scale: Set(MusicTheory.scale(tonic: scene.tonic, kind: scene.scale)), tonic: scene.tonic)
+                HStack(alignment: .top, spacing: 16) {
+                    PianoChordView(
+                        pitches: pitches.compactMap(UInt8.init(exactly:)),
+                        rootPitchClass: MusicTheory.normalized(root)
+                    )
+                    GuitarChordView(pitches: pitches.compactMap(UInt8.init(exactly:)))
                 }
                 Text("Ziehe einen Notenkopf im Notenfeld nach oben oder unten. Er rastet chromatisch auf der nächstgelegenen Tonhöhe ein.").font(.caption).foregroundStyle(.secondary)
             }.padding(18)
@@ -423,6 +435,7 @@ struct ArrangementChordDetail: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(.top, 8)
             }
+            .frame(height: 235, alignment: .top)
             VoicingPitchEditor(pitches: draft.pitches, tonic: scene.tonic, scale: scene.scale) { index, pitch in
                 guard draft.pitches.indices.contains(index) else { return }
                 draft.pitches[index] = snapsToScale ? MusicTheory.nearestScalePitch(to: pitch, tonic: scene.tonic, kind: scene.scale) : pitch
@@ -477,9 +490,12 @@ struct ArrangementChordDetail: View {
                     ForEach(ChordQuality.allCases) { Text($0.title).tag($0) }
                 }
                 .frame(width: 210)
-                Button("Umkehrung ↑") { draft.pitches = MusicTheory.invertedVoicing(draft.pitches, upward: true); commit() }
-                Button("Umkehrung ↓") { draft.pitches = MusicTheory.invertedVoicing(draft.pitches, upward: false); commit() }
+                Button("Lage höher ↑") { draft.pitches = MusicTheory.invertedVoicing(draft.pitches, upward: true); commit() }
+                    .help("Den tiefsten Akkordton eine Oktave nach oben setzen")
+                Button("Lage tiefer ↓") { draft.pitches = MusicTheory.invertedVoicing(draft.pitches, upward: false); commit() }
+                    .help("Den höchsten Akkordton eine Oktave nach unten setzen")
             }
+            VoicingPositionLabel(chord: draft.chord, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))
             HStack(spacing: 8) {
                 Toggle("Beim Ziehen auf Szenentonleiter einrasten", isOn: $snapsToScale).toggleStyle(.switch)
                 Text(snapsToScale ? "Leiterfremde Halbtöne werden übersprungen; ↑/↓ bleibt chromatisch." : "Alle Eingaben sind chromatisch.")
@@ -518,6 +534,23 @@ struct ArrangementChordDetail: View {
             }
     }
 
+}
+
+private struct VoicingPositionLabel: View {
+    let chord: TheoryChord
+    let prefersFlats: Bool
+
+    var body: some View {
+        let analysis = MusicTheory.analyzeVoicing(chord, prefersFlats: prefersFlats)
+        Label(MusicTheory.inversionDescription(chord, prefersFlats: prefersFlats), systemImage: "pianokeys")
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(analysis.role == .altered ? Color.orange : analysis.role == .inversion ? Color.purple : Color.blue)
+            .frame(width: 255, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(.quaternary.opacity(0.55), in: Capsule())
+            .accessibilityLabel("Akkordlage: \(MusicTheory.inversionDescription(chord, prefersFlats: prefersFlats))")
+    }
 }
 
 private struct ChordTheoryExplanation: View {

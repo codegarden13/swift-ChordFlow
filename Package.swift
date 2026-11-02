@@ -11,8 +11,13 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Chordflow",
-            dependencies: [.product(name: "AppHelpKit", package: "swift-app-support")],
-            resources: [.process("Resources")]
+            dependencies: [
+                .product(name: "AppHelpKit", package: "swift-app-support"),
+                .product(name: "MusicTheoryKit", package: "swift-app-support"),
+                .product(name: "MIDILiveKit", package: "swift-app-support"),
+                .product(name: "MusicTheoryUI", package: "swift-app-support"),
+                .product(name: "ABCNotationKit", package: "swift-app-support"),
+            ]
         ),
         .testTarget(name: "ChordflowTests", dependencies: ["Chordflow"]),
     ]

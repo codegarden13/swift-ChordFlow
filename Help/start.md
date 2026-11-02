@@ -1,5 +1,4 @@
 ---
-id: start
 title: Mit Chordflow beginnen
 summary: Ein Live-Set mit Partituren, Szenen und Spuren vorbereiten.
 order: 10

@@ -53,7 +53,7 @@ struct ContentView: View {
             }
         }
         .onDisappear { midi.deactivate(sessionID) }
-        .onChange(of: score.interactionCount) { _, _ in midi.activate(sessionID) }
+        .onChange(of: score.interactionCount) { _, _ in _ = midi.activate(sessionID) }
         .onChange(of: midi.notes) { _, notes in
             guard midi.isActive(sessionID) else { return }
             score.showMIDINotes(notes.map(\.number))
@@ -345,7 +345,9 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 if midi.sourceNames.isEmpty {
-                    Button("MIDI erneut suchen", systemImage: "arrow.clockwise") { midi.activate(sessionID, reportsMissingInput: true) }
+                    Button("MIDI erneut suchen", systemImage: "arrow.clockwise") {
+                        _ = midi.activate(sessionID, reportsMissingInput: true)
+                    }
                     Text("Kein Keyboard erkannt").foregroundStyle(.secondary)
                 } else {
                     Label(active ? "Keyboard aktiv" : "Partitur anklicken", systemImage: "pianokeys")

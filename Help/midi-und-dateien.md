@@ -1,5 +1,4 @@
 ---
-id: midi-und-dateien
 title: MIDI und Speicherung
 summary: Ein Keyboard verwenden, Partituren automatisch speichern und MIDI exportieren.
 order: 30

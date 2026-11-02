@@ -1,4 +1,5 @@
 import Foundation
+import MusicTheoryKit
 
 enum ScaleKind: String, CaseIterable, Identifiable, Sendable {
     case major, naturalMinor, harmonicMinor, melodicMinor, dorian, mixolydian, majorPentatonic, minorPentatonic, blues
@@ -167,9 +168,13 @@ enum MusicTheory {
     static let flatNames = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B", "H"]
     static let circleRoots = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5]
 
-    static func normalized(_ value: Int) -> Int { (value % 12 + 12) % 12 }
-    static func noteName(_ pitchClass: Int, prefersFlats: Bool = false) -> String { (prefersFlats ? flatNames : sharpNames)[normalized(pitchClass)] }
-    static func pitchName(_ midi: Int, prefersFlats: Bool = false) -> String { "\(noteName(midi, prefersFlats: prefersFlats))\(midi / 12 - 1)" }
+    static func normalized(_ value: Int) -> Int { MusicTheoryKit.MusicTheory.normalized(value) }
+    static func noteName(_ pitchClass: Int, prefersFlats: Bool = false) -> String {
+        MusicTheoryKit.MusicTheory.noteName(pitchClass, prefersFlats: prefersFlats, naming: .german)
+    }
+    static func pitchName(_ midi: Int, prefersFlats: Bool = false) -> String {
+        "\(noteName(midi, prefersFlats: prefersFlats))\(midi / 12 - 1)"
+    }
     static func scale(tonic: Int, kind: ScaleKind) -> [Int] { kind.intervals.map { normalized(tonic + $0) } }
     static func scaleNames(tonic: Int, kind: ScaleKind) -> [String] { scale(tonic: tonic, kind: kind).map { noteName($0, prefersFlats: prefersFlats(tonic: tonic)) } }
     static func contains(_ pitch: Int, tonic: Int, kind: ScaleKind) -> Bool { scale(tonic: tonic, kind: kind).contains(normalized(pitch)) }
@@ -245,6 +250,17 @@ enum MusicTheory {
         let position = inversion == 0 ? "Grundstellung" : inversion.map { "\($0). Umkehrung" } ?? "Eigenes Voicing"
         let role: ChordVoicingRole = inversion == 0 ? .standard : .inversion
         return ChordVoicingAnalysis(role: role, description: "\(position) · \(rangeText)")
+    }
+    static func inversionDescription(_ chord: TheoryChord, prefersFlats: Bool = false) -> String {
+        let expected = Set(chord.quality.intervals.map { normalized(chord.root + $0) })
+        let actual = Set(chord.pitches.map(normalized))
+        guard expected == actual,
+              let bass = chord.pitches.min(),
+              let inversion = chord.quality.intervals.firstIndex(of: normalized(bass - chord.root)) else {
+            return "Eigenes Voicing"
+        }
+        let position = inversion == 0 ? "Grundstellung" : "\(inversion). Umkehrung"
+        return "\(position) · \(noteName(bass, prefersFlats: prefersFlats)) liegt im Bass"
     }
     static func nearestScalePitch(to pitch: Int, tonic: Int, kind: ScaleKind) -> Int {
         guard !contains(pitch, tonic: tonic, kind: kind) else { return pitch }

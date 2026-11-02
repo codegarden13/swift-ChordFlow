@@ -70,6 +70,16 @@ final class ChordflowTests: XCTestCase {
         XCTAssertEqual(MusicTheory.analyzeVoicing(inversion), ChordVoicingAnalysis(role: .inversion, description: "2. Umkehrung · Lage F♯4–D♯5"))
     }
 
+    func testInversionDescriptionExplainsPositionUsingBassTone() {
+        let root = TheoryChord(root: 0, quality: .major, pitches: [60, 64, 67])
+        let first = TheoryChord(root: 0, quality: .major, pitches: [64, 67, 72])
+        let second = TheoryChord(root: 0, quality: .major, pitches: [67, 72, 76])
+
+        XCTAssertEqual(MusicTheory.inversionDescription(root), "Grundstellung · C liegt im Bass")
+        XCTAssertEqual(MusicTheory.inversionDescription(first), "1. Umkehrung · E liegt im Bass")
+        XCTAssertEqual(MusicTheory.inversionDescription(second), "2. Umkehrung · G liegt im Bass")
+    }
+
     func testChordEventsPersistAndDriveABCChordTrack() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }
