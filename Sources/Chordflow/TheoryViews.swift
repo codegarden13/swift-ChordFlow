@@ -55,18 +55,27 @@ struct TheoryWorkspaceView: View {
 
     private var arrangement: some View {
         VStack(alignment: .leading, spacing: 14) {
-                Text("Akkordfolge").font(.title2.bold())
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Ziehe Karten, um die Reihenfolge zu ändern. Die Stufe bezieht sich auf \(MusicTheory.noteName(scene.tonic)) \(scene.scale.title).").foregroundStyle(.secondary)
+                    Text("Akkordfolge").font(.title2.bold())
                     Spacer()
-                    Picker("Analyse", selection: $arrangementAnalysisMode) {
+                    Picker("Ansicht", selection: $arrangementAnalysisMode) {
                         ForEach(ArrangementAnalysisMode.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 230)
+                    .frame(width: 250)
                 }
-                if arrangementAnalysisMode == .roles { ToneRoleLegend() }
-                else { VoiceLeadingLegend() }
+                Text(arrangementAnalysisMode == .roles
+                     ? "Welche harmonische Aufgabe hat jeder Akkord in \(MusicTheory.noteName(scene.tonic)) \(scene.scale.title)?"
+                     : "Wie führen die Töne einer Karte zum jeweils nächsten Akkord?")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if arrangementAnalysisMode == .roles {
+                    Text("Stufe I vermittelt Ruhe, IV öffnet die Harmonie und V erzeugt Spannung zur Rückkehr nach I.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VoiceLeadingLegend()
+                }
                 if library.chordEvents.isEmpty {
                     ContentUnavailableView("Noch keine Akkorde", systemImage: "rectangle.stack.badge.plus", description: Text("Entwirf einen Akkord im Akkordlabor und füge ihn hier ein."))
                 } else {
@@ -83,26 +92,50 @@ struct TheoryWorkspaceView: View {
 
     private func chordCard(_ event: ChordEvent) -> some View {
         let voicing = MusicTheory.analyzeVoicing(event.chord, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))
-        return VStack(alignment: .leading, spacing: 8) {
+        let degree = MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale)
+        return VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Text(event.chord.symbol).font(.title2.bold()).foregroundStyle(voicingColor(event))
+                Text(event.chord.symbol).font(.title2.bold())
                 Spacer()
-                Button("Löschen", systemImage: "xmark.circle", role: .destructive) { library.deleteChord(event.id) }.labelStyle(.iconOnly).buttonStyle(.plain)
+                Menu("Aktionen", systemImage: "ellipsis.circle") {
+                    Button("Akkord löschen", systemImage: "trash", role: .destructive) { library.deleteChord(event.id) }
+                }
+                .labelStyle(.iconOnly)
+                .menuStyle(.borderlessButton)
+                .help("Aktionen für \(event.chord.symbol)")
             }
             Label(voicing.description, systemImage: voicing.isAltered ? "waveform.badge.exclamationmark" : "pianokeys")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(voicing.isAltered ? .orange : .secondary)
+                .foregroundStyle(voicingColor(event))
                 .lineLimit(2)
-            Text(MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale) ?? "chromatischer Akkord").font(.headline).foregroundStyle(functionColor(event.root))
+            Text(degree.map { harmonicRoleLabel(for: event, degree: $0) } ?? "chromatisch")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(degree == nil ? Color.orange : Color.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background((degree == nil ? Color.orange : Color.secondary).opacity(0.1), in: Capsule())
             Text(event.pitches.map { MusicTheory.pitchName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic)) }.joined(separator: " · ")).font(.caption.monospaced())
-            if arrangementAnalysisMode == .voiceLeading { voiceLeadingSummary(for: event) }
+            Group {
+                if arrangementAnalysisMode == .voiceLeading {
+                    voiceLeadingSummary(for: event)
+                } else if let degree {
+                    Text("Stufe \(degree) in \(MusicTheory.noteName(scene.tonic)) \(scene.scale.title)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Außerhalb der gewählten Tonleiter")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(height: 43, alignment: .topLeading)
             Spacer(minLength: 0)
             Stepper("\(event.beats) Zählzeiten", value: Binding(get: { event.beats }, set: { value in
                 var changed = event; changed.beats = value; library.updateChord(changed)
             }), in: 1...32)
         }
         .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 205, maxHeight: 205, alignment: .topLeading)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture {
@@ -122,6 +155,15 @@ struct TheoryWorkspaceView: View {
         case .standard: .blue
         case .inversion: .purple
         case .altered: .orange
+        }
+    }
+
+    private func harmonicRoleLabel(for event: ChordEvent, degree: String) -> String {
+        switch MusicTheory.normalized(event.root - scene.tonic) {
+        case 0: "\(degree) · Tonika"
+        case 5: "\(degree) · Subdominante"
+        case 7: "\(degree) · Dominante"
+        default: "Stufe \(degree)"
         }
     }
 

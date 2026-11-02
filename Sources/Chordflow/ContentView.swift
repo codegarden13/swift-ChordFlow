@@ -79,7 +79,9 @@ struct ContentView: View {
             }
             HStack {
                 Button("Partitur hinzufügen", systemImage: "plus") { library.addScore() }.labelStyle(.iconOnly)
+                    .help("Neue Partitur anlegen")
                 Button("Partitur löschen", systemImage: "trash", role: .destructive) { library.deleteSelectedScore() }.labelStyle(.iconOnly).disabled(library.selectedScoreID == nil)
+                    .help("Ausgewählte Partitur löschen")
                 Spacer()
             }
             .buttonStyle(.borderless).padding(10)
@@ -229,11 +231,11 @@ struct ContentView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Button("Alles", systemImage: "play.fill") { score.run(.play) }
+                    Button("Ganze Szene", systemImage: "play.fill") { score.run(.play) }
                     Button("Stopp", systemImage: "stop.fill") { score.run(.stop) }
                     if score.measureCount > 0 {
                         Picker("Takt", selection: $measure) { ForEach(0..<score.measureCount, id: \.self) { Text("\($0 + 1)").tag($0) } }.frame(width: 110)
-                        Button("Takt", systemImage: "play.fill") { score.run(.playMeasure(measure)) }
+                        Button("Takt abspielen", systemImage: "play.fill") { score.run(.playMeasure(measure)) }
                     }
                     Spacer()
                     Button("MIDI exportieren", systemImage: "square.and.arrow.up") { score.run(.exportMIDI) }
@@ -285,6 +287,7 @@ struct ContentView: View {
     }
 
     private func previewArrangementChord(_ event: ChordEvent) {
+        measure = measureNumber(for: event) - 1
         MIDIService.shared.previewChord(event.pitches)
         score.highlightChord(measure: measureNumber(for: event) - 1, pitches: event.pitches)
     }
