@@ -1,6 +1,32 @@
-.build/
-*_changes.md
+# macOS
 .DS_Store
-AGENTS.md
-/_scripts
-/changelog
+
+# Xcode user-local workspace and source-control state
+xcuserdata/
+*.xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Xcode and SwiftPM build outputs
+DerivedData/
+build/
+.build/
+.swiftpm/
+
+# Internal project documentation and automation
+/changelog/
+/AGENTS.md
+/_scripts/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases and sidecar files
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
