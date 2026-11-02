@@ -28,11 +28,7 @@ Alternativ lässt sich `Package.swift` direkt in Xcode öffnen und das Scheme `C
 
 ## Installieren
 
-Der zentrale Installer baut, signiert und installiert Chordflow nach `/Applications`:
-
-```bash
-pwsh /Users/thomassalomon/dev-swift/_scripts/Install-App.ps1 Chordflow arm
-```
+Der zentrale Installer baut, signiert und installiert Chordflow nach `/Applications`
 
 ## Datenspeicher
 
