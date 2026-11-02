@@ -25,6 +25,22 @@ final class ChordflowTests: XCTestCase {
         XCTAssertNil(try database.createInitialDemoIfNeeded())
     }
 
+    func testTimelineScoreMapsEachYearToOneMeasureAndEachQuarterToOneBeat() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+
+        let scoreID = try database.createTimelineScore(title: "Projektgeschichte", startYear: 2020, endYear: 2022)
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        let tracks = try database.tracks(sceneID: scene.id)
+
+        XCTAssertEqual(scene.title, "2020–2022")
+        XCTAssertEqual(tracks.map(\.name), ["Zeitachse", "Segmente", "Notizen"])
+        XCTAssertEqual(tracks.map { ABCTrackTiming.duration(of: $0.abc) }, [12, 12, 12])
+        XCTAssertTrue(tracks[0].abc.contains("\"_2020 · Q1\"x \"_Q2\"x \"_Q3\"x \"_Q4\"x |"))
+        XCTAssertTrue(tracks.allSatisfy { $0.endMode == .independent })
+    }
+
     func testNewScoreHasSceneAndThreeDefaultTracks() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }

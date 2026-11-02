@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showsTitleEditor = false
     @State private var titleDraft = ""
     @State private var usesScoreSelectionRectangle = false
+    @State private var showsTimelineCreator = false
     @FocusState private var titleEditorFocused: Bool
 
     var body: some View {
@@ -70,6 +71,11 @@ struct ContentView: View {
             score.clearSelectedNote()
         }
         .onChange(of: workspaceMode) { _, mode in if mode != .arrangement { selectedArrangementChord = nil } }
+        .sheet(isPresented: $showsTimelineCreator) {
+            TimelineScoreCreator { title, startYear, endYear in
+                library.addTimelineScore(title: title, startYear: startYear, endYear: endYear)
+            }
+        }
         .alert("Datenbankfehler", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
             Button("OK", role: .cancel) { library.errorMessage = nil }
         } message: { Text(library.errorMessage ?? "Unbekannter Fehler") }
@@ -83,8 +89,13 @@ struct ContentView: View {
                 }
             }
             HStack {
-                Button("Partitur hinzufügen", systemImage: "plus") { library.addScore() }.labelStyle(.iconOnly)
-                    .help("Neue Partitur anlegen")
+                Menu("Partitur hinzufügen", systemImage: "plus") {
+                    Button("Neue Musikpartitur", systemImage: "music.note.list") { library.addScore() }
+                    Button("Neue Zeitachsen-Partitur …", systemImage: "calendar.day.timeline.leading") { showsTimelineCreator = true }
+                }
+                .labelStyle(.iconOnly)
+                .menuStyle(.borderlessButton)
+                .help("Neue Musik- oder Zeitachsen-Partitur anlegen")
                 Button("Partitur löschen", systemImage: "trash", role: .destructive) { library.deleteSelectedScore() }.labelStyle(.iconOnly).disabled(library.selectedScoreID == nil)
                     .help("Ausgewählte Partitur löschen")
                 Spacer()
@@ -445,6 +456,45 @@ struct ContentView: View {
                 Text(midi.notes.isEmpty ? "Spiele auf dem Keyboard …" : midi.notes.map { MusicNames.note($0.number) }.joined(separator: " · ")).font(.callout.monospacedDigit()).foregroundStyle(midi.notes.isEmpty ? .secondary : .primary)
             }
         }
+    }
+}
+
+private struct TimelineScoreCreator: View {
+    let create: (String, Int, Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = "Meine Zeitachse"
+    @State private var startYear = Calendar.current.component(.year, from: .now) - 40
+    @State private var endYear = Calendar.current.component(.year, from: .now)
+
+    private var yearCount: Int { max(0, endYear - startYear + 1) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Neue Zeitachsen-Partitur").font(.title2.bold())
+            Text("Ein Jahr wird als 4/4-Takt angelegt; Q1 bis Q4 entsprechen den vier Vierteln.")
+                .foregroundStyle(.secondary)
+            TextField("Titel", text: $title)
+            HStack {
+                Stepper("Startjahr: \(startYear)", value: $startYear, in: 1...9999)
+                Stepper("Endjahr einschließlich: \(endYear)", value: $endYear, in: 1...9999)
+            }
+            GroupBox("Vorschau") {
+                LabeledContent("Zeitraum", value: "\(startYear)–\(endYear)")
+                LabeledContent("Umfang", value: "\(yearCount) Takte · \(yearCount * 4) Quartale")
+            }
+            HStack {
+                Spacer()
+                Button("Abbrechen") { dismiss() }
+                Button("Zeitachsen-Partitur anlegen") {
+                    create(title, startYear, endYear)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || startYear > endYear || yearCount > 300)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
     }
 }
 

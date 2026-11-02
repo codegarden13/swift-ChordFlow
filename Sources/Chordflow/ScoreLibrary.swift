@@ -19,6 +19,19 @@ enum ScoreDefaults {
     static let trackABC = ["C,4 | F,4 | G,4 | C,4 |", "C D E G | A G E D |", "[CEG]4 | [FAc]4 | [GBd]4 | [CEG]4 |"]
 }
 
+enum TimelineScoreTemplate {
+    static let trackNames = ["Zeitachse", "Segmente", "Notizen"]
+
+    static func trackABC(startYear: Int, endYear: Int) -> [String] {
+        let years = Array(startYear...endYear)
+        let timeline = years.map { year in
+            "\"_\(year) · Q1\"x \"_Q2\"x \"_Q3\"x \"_Q4\"x |"
+        }.joined(separator: " ")
+        let empty = years.map { _ in "x4 |" }.joined(separator: " ")
+        return [timeline, empty, empty]
+    }
+}
+
 enum ScoreDemo {
     static let title = "Neonlinien – House Demo"
     static let sceneTitle = "Four Minute Journey"
@@ -80,12 +93,13 @@ enum ScoreDemo {
 }
 
 enum ScoreLibraryError: LocalizedError {
-    case applicationSupportUnavailable, database(String), corruptData(String)
+    case applicationSupportUnavailable, database(String), corruptData(String), invalidInput(String)
     var errorDescription: String? {
         switch self {
         case .applicationSupportUnavailable: "Der Speicherort für die Partituren ist nicht verfügbar."
         case let .database(message): "Die Partitur-Datenbank konnte nicht verwendet werden: \(message)"
         case let .corruptData(message): "Die Partitur-Datenbank enthält ungültige Daten: \(message)"
+        case let .invalidInput(message): message
         }
     }
 }
@@ -209,6 +223,23 @@ final class ScoreDatabase {
             return scoreID
         }
     }
+    @discardableResult func createTimelineScore(title: String, startYear: Int, endYear: Int) throws -> Int64 {
+        let cleanedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedTitle.isEmpty else { throw ScoreLibraryError.invalidInput("Die Zeitachsen-Partitur benötigt einen Titel.") }
+        guard startYear <= endYear else { throw ScoreLibraryError.invalidInput("Das Startjahr muss vor oder im Endjahr liegen.") }
+        guard endYear - startYear < 300 else { throw ScoreLibraryError.invalidInput("Eine Zeitachse darf höchstens 300 Jahre umfassen.") }
+        let tracks = TimelineScoreTemplate.trackABC(startYear: startYear, endYear: endYear)
+        return try transaction {
+            try run("INSERT INTO scores(title) VALUES (?)", binds: [.text(cleanedTitle)])
+            let scoreID = sqlite3_last_insert_rowid(handle)
+            try run("INSERT INTO scenes(score_id, title, tempo, position, tonic, scale_kind) VALUES (?, ?, 120, 0, 0, ?)", binds: [.integer(scoreID), .text("\(startYear)–\(endYear)"), .text(ScaleKind.major.rawValue)])
+            let sceneID = sqlite3_last_insert_rowid(handle)
+            for position in TimelineScoreTemplate.trackNames.indices {
+                try run("INSERT INTO tracks(scene_id, name, abc, position, end_mode) VALUES (?, ?, ?, ?, ?)", binds: [.integer(sceneID), .text(TimelineScoreTemplate.trackNames[position]), .text(tracks[position]), .integer(Int64(position)), .text(TrackEndMode.independent.rawValue)])
+            }
+            return scoreID
+        }
+    }
     func createInitialDemoIfNeeded() throws -> Int64? {
         let wasHandled = try scalarInt("SELECT count(*) FROM app_metadata WHERE key = 'initial_demo_created'", binds: []) > 0
         guard !wasHandled else { return nil }
@@ -312,6 +343,7 @@ final class ScoreDatabase {
     init(database: ScoreDatabase? = nil) { do { self.database = try database ?? ScoreDatabase(); let demoID = try self.database?.createInitialDemoIfNeeded(); try reloadScores(selecting: demoID) } catch { report(error, context: "Partituren konnten nicht geladen werden") } }
     var selectedScore: Score? { scores.first { $0.id == selectedScoreID } }; var selectedScene: ScoreScene? { scenes.first { $0.id == selectedSceneID } }
     func addScore() { perform("Partitur konnte nicht angelegt werden") { let id = try $0.createScore(); try reloadScores(selecting: id) } }
+    func addTimelineScore(title: String, startYear: Int, endYear: Int) { perform("Zeitachsen-Partitur konnte nicht angelegt werden") { let id = try $0.createTimelineScore(title: title, startYear: startYear, endYear: endYear); try reloadScores(selecting: id) } }
     func selectScore(_ id: Int64?) { selectedScoreID = id; perform("Partitur konnte nicht geladen werden") { _ in try loadSelectedScore() } }
     func selectScene(_ id: Int64?) { selectedSceneID = id; perform("Szene konnte nicht geladen werden") { tracks = try id.map($0.tracks(sceneID:)) ?? []; chordEvents = try id.map($0.chordEvents(sceneID:)) ?? [] } }
     func addScene() { guard let scoreID = selectedScoreID else { return }; perform("Szene konnte nicht angelegt werden") { let id = try $0.createScene(scoreID: scoreID); scenes = try $0.scenes(scoreID: scoreID); selectScene(id) } }
