@@ -3,6 +3,28 @@ import XCTest
 @testable import Chordflow
 
 final class ChordflowTests: XCTestCase {
+    func testInitialDemoCreatesExactFourMinuteHouseScoreOnce() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+
+        let scoreID = try XCTUnwrap(database.createInitialDemoIfNeeded())
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        let tracks = try database.tracks(sceneID: scene.id)
+        let chords = try database.chordEvents(sceneID: scene.id)
+
+        XCTAssertEqual(try database.scores().first?.title, ScoreDemo.title)
+        XCTAssertEqual(scene.title, ScoreDemo.sceneTitle)
+        XCTAssertEqual(scene.tempo, 124)
+        XCTAssertEqual(scene.tonic, 9)
+        XCTAssertEqual(scene.scale, .naturalMinor)
+        XCTAssertEqual(ScoreDemo.durationSeconds, 240)
+        XCTAssertEqual(tracks.map(\.name), ScoreDemo.trackNames)
+        XCTAssertEqual(tracks.map { ABCTrackTiming.duration(of: $0.abc) }, [496, 496, 496])
+        XCTAssertEqual(chords.reduce(0) { $0 + $1.beats }, 496)
+        XCTAssertNil(try database.createInitialDemoIfNeeded())
+    }
+
     func testNewScoreHasSceneAndThreeDefaultTracks() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }

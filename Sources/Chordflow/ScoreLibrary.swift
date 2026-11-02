@@ -19,6 +19,66 @@ enum ScoreDefaults {
     static let trackABC = ["C,4 | F,4 | G,4 | C,4 |", "C D E G | A G E D |", "[CEG]4 | [FAc]4 | [GBd]4 | [CEG]4 |"]
 }
 
+enum ScoreDemo {
+    static let title = "Neonlinien – House Demo"
+    static let sceneTitle = "Four Minute Journey"
+    static let tempo = 124
+    static let measureCount = 124
+    static let trackNames = ["Bass-Groove", "Lead", "Chord-Stabs"]
+
+    static var durationSeconds: Int { measureCount * 4 * 60 / tempo }
+
+    static let trackABC: [String] = {
+        [bassMeasures, leadMeasures, chordMeasures].map { $0.joined(separator: " ") }
+    }()
+
+    static let harmony: [(root: Int, quality: ChordQuality, pitches: [Int], bass: Int)] = [
+        (9, .minor, [57, 60, 64], 33),
+        (5, .major7, [53, 57, 60, 64], 29),
+        (0, .major, [55, 60, 64], 36),
+        (7, .major, [55, 59, 62], 31),
+    ]
+
+    private static var bassMeasures: [String] {
+        (0..<measureCount).map { measure in
+            let chord = harmony[(measure / 4) % harmony.count]
+            let root = MusicTheory.abcNote(chord.bass)
+            let fifth = MusicTheory.abcNote(chord.bass + 7)
+            if measure < 8 || measure >= 116 { return "\(root)2 z2 |" }
+            if (56..<72).contains(measure) { return measure.isMultiple(of: 2) ? "\(root)4 |" : "z4 |" }
+            return "\(root) z \(fifth) z |"
+        }
+    }
+
+    private static var leadMeasures: [String] {
+        let groove = ["z E A c |", "e2 d c |", "z E G A |", "c2 A G |"]
+        let lift = ["A c e c |", "F A c A |", "G c e G |", "G B d B |"]
+        let peak = ["e d c A |", "c A F A |", "G A c e |", "d B G E |"]
+        return (0..<measureCount).map { measure in
+            switch measure {
+            case 0..<8: "z4 |"
+            case 8..<40: groove[measure % groove.count]
+            case 40..<56: lift[measure % lift.count]
+            case 56..<64: measure.isMultiple(of: 2) ? "A4 |" : "z4 |"
+            case 64..<72: ["A2 c2 |", "e4 |", "G2 A2 |", "B4 |"][measure % 4]
+            case 72..<112: peak[measure % peak.count]
+            case 112..<120: groove[measure % groove.count]
+            default: "z4 |"
+            }
+        }
+    }
+
+    private static var chordMeasures: [String] {
+        (0..<measureCount).map { measure in
+            let chord = harmony[(measure / 4) % harmony.count]
+            let tones = chord.pitches.map(MusicTheory.abcNote).joined()
+            if measure < 4 || measure >= 120 { return "[\(tones)]4 |" }
+            if (56..<64).contains(measure) { return measure.isMultiple(of: 2) ? "[\(tones)]4 |" : "z4 |" }
+            return "z [\(tones)] z [\(tones)] |"
+        }
+    }
+}
+
 enum ScoreLibraryError: LocalizedError {
     case applicationSupportUnavailable, database(String), corruptData(String)
     var errorDescription: String? {
@@ -62,6 +122,7 @@ final class ScoreDatabase {
                 CREATE TABLE IF NOT EXISTS scores (id INTEGER PRIMARY KEY, title TEXT NOT NULL CHECK(length(trim(title)) > 0), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS scenes (id INTEGER PRIMARY KEY, score_id INTEGER NOT NULL REFERENCES scores(id) ON DELETE CASCADE, title TEXT NOT NULL CHECK(length(trim(title)) > 0), tempo INTEGER NOT NULL DEFAULT 120 CHECK(tempo BETWEEN 20 AND 400), position INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS tracks (id INTEGER PRIMARY KEY, scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE, name TEXT NOT NULL CHECK(length(trim(name)) > 0), abc TEXT NOT NULL, position INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS scenes_score_position ON scenes(score_id, position);
                 CREATE INDEX IF NOT EXISTS tracks_scene_position ON tracks(scene_id, position);
                 """)
@@ -131,6 +192,29 @@ final class ScoreDatabase {
             try addDefaultTracks(sceneID: sqlite3_last_insert_rowid(handle))
             return scoreID
         }
+    }
+    @discardableResult func createDemoScore() throws -> Int64 {
+        try transaction {
+            try run("INSERT INTO scores(title) VALUES (?)", binds: [.text(ScoreDemo.title)])
+            let scoreID = sqlite3_last_insert_rowid(handle)
+            try run("INSERT INTO scenes(score_id, title, tempo, position, tonic, scale_kind) VALUES (?, ?, ?, 0, 9, ?)", binds: [.integer(scoreID), .text(ScoreDemo.sceneTitle), .integer(Int64(ScoreDemo.tempo)), .text(ScaleKind.naturalMinor.rawValue)])
+            let sceneID = sqlite3_last_insert_rowid(handle)
+            for position in ScoreDemo.trackNames.indices {
+                try run("INSERT INTO tracks(scene_id, name, abc, position) VALUES (?, ?, ?, ?)", binds: [.integer(sceneID), .text(ScoreDemo.trackNames[position]), .text(ScoreDemo.trackABC[position]), .integer(Int64(position))])
+            }
+            for position in 0..<31 {
+                let harmony = ScoreDemo.harmony[position % ScoreDemo.harmony.count]
+                try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats, bass_pitch) VALUES (?, ?, ?, ?, ?, 16, ?)", binds: [.integer(sceneID), .integer(Int64(position)), .integer(Int64(harmony.root)), .text(harmony.quality.rawValue), .text(harmony.pitches.map(String.init).joined(separator: ",")), .integer(Int64(harmony.bass))])
+            }
+            return scoreID
+        }
+    }
+    func createInitialDemoIfNeeded() throws -> Int64? {
+        let wasHandled = try scalarInt("SELECT count(*) FROM app_metadata WHERE key = 'initial_demo_created'", binds: []) > 0
+        guard !wasHandled else { return nil }
+        let scoreID = try scalarInt("SELECT count(*) FROM scores WHERE title = ?", binds: [.text(ScoreDemo.title)]) == 0 ? createDemoScore() : nil
+        try run("INSERT INTO app_metadata(key, value) VALUES ('initial_demo_created', '1')")
+        return scoreID
     }
     @discardableResult func createScene(scoreID: Int64) throws -> Int64 {
         try transaction {
@@ -225,7 +309,7 @@ final class ScoreDatabase {
     @Published private(set) var scores: [Score] = []; @Published private(set) var scenes: [ScoreScene] = []; @Published private(set) var tracks: [ScoreTrack] = []; @Published private(set) var chordEvents: [ChordEvent] = []
     @Published var selectedScoreID: Int64?; @Published var selectedSceneID: Int64?; @Published var errorMessage: String?
 
-    init(database: ScoreDatabase? = nil) { do { self.database = try database ?? ScoreDatabase(); try reloadScores(selecting: nil) } catch { report(error, context: "Partituren konnten nicht geladen werden") } }
+    init(database: ScoreDatabase? = nil) { do { self.database = try database ?? ScoreDatabase(); let demoID = try self.database?.createInitialDemoIfNeeded(); try reloadScores(selecting: demoID) } catch { report(error, context: "Partituren konnten nicht geladen werden") } }
     var selectedScore: Score? { scores.first { $0.id == selectedScoreID } }; var selectedScene: ScoreScene? { scenes.first { $0.id == selectedSceneID } }
     func addScore() { perform("Partitur konnte nicht angelegt werden") { let id = try $0.createScore(); try reloadScores(selecting: id) } }
     func selectScore(_ id: Int64?) { selectedScoreID = id; perform("Partitur konnte nicht geladen werden") { _ in try loadSelectedScore() } }
