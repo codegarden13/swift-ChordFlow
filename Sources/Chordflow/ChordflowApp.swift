@@ -7,6 +7,7 @@ struct ChordflowApp: App {
 
     var body: some Scene {
         WindowGroup { ContentView(library: library) }
+            .windowToolbarStyle(.unified(showsTitle: false))
             .commands {
                 CommandGroup(replacing: .newItem) {
                     Button("Neue Partitur") { library.addScore() }.keyboardShortcut("n")

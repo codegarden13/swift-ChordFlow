@@ -17,7 +17,8 @@ let package = Package(
                 .product(name: "MIDILiveKit", package: "swift-app-support"),
                 .product(name: "MusicTheoryUI", package: "swift-app-support"),
                 .product(name: "ABCNotationKit", package: "swift-app-support"),
-            ]
+            ],
+            resources: [.process("Resources")]
         ),
         .testTarget(name: "ChordflowTests", dependencies: ["Chordflow"]),
     ]

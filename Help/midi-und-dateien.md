@@ -9,4 +9,4 @@ Schließe das MIDI-Keyboard an und klicke die Partitur an. Chordflow ordnet das 
 
 Wird kein Keyboard erkannt, prüfe Kabel, Stromversorgung und die MIDI-Verbindung. **MIDI erneut suchen** startet anschließend eine neue Erkennung. Ein technischer Fehler wird mit seiner Ursache sichtbar angezeigt und protokolliert.
 
-**MIDI exportieren** erzeugt aus der aktuellen Szene eine `.mid`-Datei. Die bearbeitbaren Partituren, Szenen und Spuren speichert Chordflow automatisch in seiner SQLite-Datenbank; separate Set-Dateien sind nicht erforderlich.
+**MIDI exportieren** erzeugt aus dem aktuellen Abschnitt eine `.mid`-Datei. Die bearbeitbaren Partituren, Abschnitte und Spuren speichert Chordflow automatisch in seiner SQLite-Datenbank; separate Set-Dateien sind nicht erforderlich.

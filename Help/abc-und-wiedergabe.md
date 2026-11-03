@@ -11,7 +11,7 @@ Jede Spur enthält den musikalischen ABC-Inhalt ohne eigenen Kopf, zum Beispiel:
 "Am"[A,CE]4 |
 ```
 
-Chordflow ergänzt Titel, Tempo, Taktart und Tonart und führt Bass, Melodie und Akkorde als Stimmen zusammen. **Ganze Szene** spielt die vollständige Szene. Über die Taktauswahl und **Takt abspielen** hörst du einen einzelnen Takt. **Stopp** beendet die Wiedergabe.
+Chordflow ergänzt Titel, Tempo, Taktart und Tonart und führt Bass, Melodie und Akkorde als Stimmen zusammen. **Takt N hören** spielt den grün markierten Takt sofort ab. **Ganzes Stück hören** startet das vollständige Stück; bei mehreren Abschnitten heißt der Knopf entsprechend **Abschnitt … hören**. **Stopp** beendet die Wiedergabe.
 
 ## Mehrere Noten bearbeiten
 

@@ -195,21 +195,21 @@ enum MusicTheory {
         if inChord, let chord {
             let interval = intervalName(normalized(pitch - chord.root))
             if inScene && inTrack {
-                return ToneAnalysis(role: .chordTone, title: "Akkordton", explanation: "\(name) ist die \(interval) von \(chord.symbol) und liegt zugleich in Szenen- und Spurtonleiter.")
+                return ToneAnalysis(role: .chordTone, title: "Akkordton", explanation: "\(name) ist die \(interval) von \(chord.symbol) und liegt zugleich in Abschnitts- und Spurtonleiter.")
             }
-            let missing = !inScene && !inTrack ? "Szenen- und Spurtonleiter" : !inScene ? "Szenentonleiter" : "Spurtonleiter"
+            let missing = !inScene && !inTrack ? "Abschnitts- und Spurtonleiter" : !inScene ? "Abschnittstonleiter" : "Spurtonleiter"
             return ToneAnalysis(role: .chordColor, title: "Akkordfarbe", explanation: "\(name) liegt außerhalb der \(missing), ist aber als \(interval) von \(chord.symbol) harmonisch erklärt.")
         }
         if inScene && inTrack {
-            return ToneAnalysis(role: .common, title: "Gemeinsamer Ton", explanation: "\(name) gehört zur Szenen- und Spurtonleiter und eignet sich als stabiler Verbindungston.")
+            return ToneAnalysis(role: .common, title: "Gemeinsamer Ton", explanation: "\(name) gehört zur Abschnitts- und Spurtonleiter und eignet sich als stabiler Verbindungston.")
         }
         if inScene {
-            return ToneAnalysis(role: .scene, title: "Szenenton", explanation: "\(name) gehört zum gemeinsamen Szenenklang, liegt aber außerhalb der gewählten Spurtonleiter.")
+            return ToneAnalysis(role: .scene, title: "Abschnittston", explanation: "\(name) gehört zum gemeinsamen Abschnittsklang, liegt aber außerhalb der gewählten Spurtonleiter.")
         }
         if inTrack {
-            return ToneAnalysis(role: .track, title: "Spurton", explanation: "\(name) gehört zur Spurtonleiter, erweitert aber den gemeinsamen Szenenklang.")
+            return ToneAnalysis(role: .track, title: "Spurton", explanation: "\(name) gehört zur Spurtonleiter, erweitert aber den gemeinsamen Abschnittsklang.")
         }
-        return ToneAnalysis(role: .tension, title: "Offene Spannung", explanation: "\(name) gehört weder zum aktuellen Akkord noch zur Szenen- oder Spurtonleiter. Entscheidend ist seine Auflösung in den nächsten Ton.")
+        return ToneAnalysis(role: .tension, title: "Offene Spannung", explanation: "\(name) gehört weder zum aktuellen Akkord noch zur Abschnitts- oder Spurtonleiter. Entscheidend ist seine Auflösung in den nächsten Ton.")
     }
     static func voiceLeading(from source: TheoryChord, to destination: TheoryChord) -> VoiceLeadingAnalysis {
         let sourceClasses = Set(source.pitches.map(normalized))

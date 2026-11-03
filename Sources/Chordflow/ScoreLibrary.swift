@@ -207,7 +207,7 @@ final class ScoreDatabase {
         try transaction {
             try run("INSERT INTO scores(title) VALUES (?)", binds: [.text(title)])
             let scoreID = sqlite3_last_insert_rowid(handle)
-            try run("INSERT INTO scenes(score_id, title, tempo, position) VALUES (?, 'Szene 1', 120, 0)", binds: [.integer(scoreID)])
+            try run("INSERT INTO scenes(score_id, title, tempo, position) VALUES (?, 'Abschnitt 1', 120, 0)", binds: [.integer(scoreID)])
             try addDefaultTracks(sceneID: sqlite3_last_insert_rowid(handle))
             return scoreID
         }
@@ -255,7 +255,7 @@ final class ScoreDatabase {
     @discardableResult func createScene(scoreID: Int64) throws -> Int64 {
         try transaction {
             let count = try scalarInt("SELECT count(*) FROM scenes WHERE score_id = ?", binds: [.integer(scoreID)])
-            try run("INSERT INTO scenes(score_id, title, tempo, position) VALUES (?, ?, 120, ?)", binds: [.integer(scoreID), .text("Szene \(count + 1)"), .integer(count)])
+            try run("INSERT INTO scenes(score_id, title, tempo, position) VALUES (?, ?, 120, ?)", binds: [.integer(scoreID), .text("Abschnitt \(count + 1)"), .integer(count)])
             let sceneID = sqlite3_last_insert_rowid(handle)
             try addDefaultTracks(sceneID: sceneID); try touch(scoreID)
             return sceneID
@@ -358,7 +358,7 @@ final class ScoreDatabase {
                 (id: sqlite3_column_int64($0, 0), sceneID: sqlite3_column_int64($0, 1), startBeat: Int(sqlite3_column_int($0, 2)), beats: Int(sqlite3_column_int($0, 3)))
             }
             guard events.count == ids.count, Set(events.map(\.sceneID)).count == 1 else {
-                throw ScoreLibraryError.invalidInput("Die Akkordfolge enthält fehlende Akkorde oder Akkorde aus verschiedenen Szenen.")
+                throw ScoreLibraryError.invalidInput("Die Akkordfolge enthält fehlende Akkorde oder Akkorde aus verschiedenen Abschnitten.")
             }
             let slots = events.map(\.startBeat)
             let eventByID = Dictionary(uniqueKeysWithValues: events.map { ($0.id, $0) })
@@ -453,7 +453,7 @@ final class ScoreDatabase {
     func addScore() { perform("Partitur konnte nicht angelegt werden") { let id = try $0.createScore(); try reloadScores(selecting: id) } }
     func addTimelineScore(title: String, startYear: Int, endYear: Int) { perform("Zeitachsen-Partitur konnte nicht angelegt werden") { let id = try $0.createTimelineScore(title: title, startYear: startYear, endYear: endYear); try reloadScores(selecting: id) } }
     func selectScore(_ id: Int64?) { selectedScoreID = id; perform("Partitur konnte nicht geladen werden") { _ in try loadSelectedScore() } }
-    func selectScene(_ id: Int64?) { selectedSceneID = id; chordDrafts = [:]; perform("Szene konnte nicht geladen werden") { tracks = try id.map($0.tracks(sceneID:)) ?? []; chordEvents = try id.map($0.chordEvents(sceneID:)) ?? [] } }
+    func selectScene(_ id: Int64?) { selectedSceneID = id; chordDrafts = [:]; perform("Abschnitt konnte nicht geladen werden") { tracks = try id.map($0.tracks(sceneID:)) ?? []; chordEvents = try id.map($0.chordEvents(sceneID:)) ?? [] } }
     var displayedChordEvents: [ChordEvent] { chordEvents.map { chordDrafts[$0.id] ?? $0 } }
     func chordDraft(id: Int64) -> ChordEvent? { chordDrafts[id] }
     func stageChordDraft(_ draft: ChordEvent) {
@@ -481,9 +481,9 @@ final class ScoreDatabase {
         return succeeded
     }
     func discardChordDraft(id: Int64) { chordDrafts.removeValue(forKey: id) }
-    func addScene() { guard let scoreID = selectedScoreID else { return }; perform("Szene konnte nicht angelegt werden") { let id = try $0.createScene(scoreID: scoreID); scenes = try $0.scenes(scoreID: scoreID); selectScene(id) } }
+    func addScene() { guard let scoreID = selectedScoreID else { return }; perform("Abschnitt konnte nicht angelegt werden") { let id = try $0.createScene(scoreID: scoreID); scenes = try $0.scenes(scoreID: scoreID); selectScene(id) } }
     func updateScoreTitle(_ title: String) { guard let id = selectedScoreID, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }; perform("Partiturtitel konnte nicht gespeichert werden") { try $0.updateScore(id: id, title: title); if let index = scores.firstIndex(where: { $0.id == id }) { scores[index].title = title } } }
-    func updateScene(_ scene: ScoreScene) { perform("Szene konnte nicht gespeichert werden") { try $0.updateScene(scene); if let index = scenes.firstIndex(where: { $0.id == scene.id }) { scenes[index] = scene } } }
+    func updateScene(_ scene: ScoreScene) { perform("Abschnitt konnte nicht gespeichert werden") { try $0.updateScene(scene); if let index = scenes.firstIndex(where: { $0.id == scene.id }) { scenes[index] = scene } } }
     func updateTrack(_ track: ScoreTrack) { guard let scoreID = selectedScoreID else { return }; perform("Spur konnte nicht gespeichert werden") { try $0.updateTrack(track, scoreID: scoreID); if let index = tracks.firstIndex(where: { $0.id == track.id }) { tracks[index] = track } } }
     func addChord(_ chord: TheoryChord) { guard let sceneID = selectedSceneID else { return }; perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord); chordEvents = try $0.chordEvents(sceneID: sceneID) } }
     @discardableResult func addChord(_ chord: TheoryChord, atBeat startBeat: Int) -> Bool { guard let sceneID = selectedSceneID else { return false }; var succeeded = false; perform("Akkord konnte nicht eingesetzt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord, atBeat: startBeat); chordEvents = try $0.chordEvents(sceneID: sceneID); succeeded = true }; return succeeded }

@@ -1,11 +1,11 @@
 ---
 title: Akkorde und Musiktheorie
-summary: Akkorde entwerfen, Tonleitern untersuchen und Folgen für eine Szene planen.
+summary: Akkorde entwerfen, Tonleitern untersuchen und Folgen für einen Abschnitt planen.
 order: 25
 keywords: [Akkord, Tonleiter, Quintenzirkel, Voicing, Arrangement]
 ---
 
-Jede Szene besitzt einen Grundton und eine Tonleiter. Wähle beides oberhalb des Arbeitsbereichs. Eine Spur verwendet standardmäßig **Wie Szene**; im Bereich **Spuren** kannst du ihr für Experimente eine eigene Tonleiter zuweisen.
+Jeder Abschnitt besitzt einen Grundton und eine Tonleiter. Wähle beides oberhalb des Arbeitsbereichs. Ein Abschnitt kann beispielsweise das Intro, die Strophe oder der Refrain sein; mit nur einem Abschnitt verhält sich die App wie ein durchgehendes Stück. Eine Spur verwendet standardmäßig **Wie Abschnitt**; im Bereich **Spuren** kannst du ihr für Experimente eine eigene Tonleiter zuweisen. Beim Arbeiten mit Ableton Live entspricht ein Abschnitt dem vertrauten Szenenkonzept.
 
 ## Einfach und Erweitert
 
@@ -35,10 +35,10 @@ Die Notationskarte verwendet denselben ABC-/abcjs-Renderer wie die vollständige
 
 ## Akkordkarten
 
-Jede Karte ist ein Akkordereignis der Szene. Ziehe eine Karte auf eine andere, um die Reihenfolge zu verändern. Die Zahl der Zählzeiten bestimmt die Länge. Akkord- und Bassspur sowie die Partiturvorschau werden unmittelbar aus der Folge erzeugt; die Bassspur spielt dabei die jeweiligen Grundtöne.
+Jede Karte ist ein Akkordereignis des Abschnitts. Ziehe eine Karte auf eine andere, um die Reihenfolge zu verändern. Die Zahl der Zählzeiten bestimmt die Länge. Akkord- und Bassspur sowie die Partiturvorschau werden unmittelbar aus der Folge erzeugt; die Bassspur spielt dabei die jeweiligen Grundtöne.
 
 ## Quintenzirkel
 
-Der äußere Name bezeichnet die Durtonart, der kleinere innere Name ihre parallele Molltonart. Ein Klick setzt das tonale Zentrum der Szene. Die App zeigt dazu Tonleiter, Dominante, Subdominante und Paralleltonart.
+Der äußere Name bezeichnet die Durtonart, der kleinere innere Name ihre parallele Molltonart. Ein Klick setzt das tonale Zentrum des Abschnitts. Die App zeigt dazu Tonleiter, Dominante, Subdominante und Paralleltonart.
 
 Nach einem Klick entscheidest du ausdrücklich zwischen **Nur Analyse ändern** und **Akkordfolge transponieren**. Die kontrollierte Transposition verschiebt gespeicherte Akkorde, Voicings und die daraus erzeugte Bassspur. Frei eingegebene Melodien bleiben unverändert.

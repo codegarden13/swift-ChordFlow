@@ -36,6 +36,8 @@ final class ScoreController: ObservableObject {
     @Published private(set) var isReady = false
     @Published private(set) var measureCount = 0
     @Published private(set) var interactionCount = 0
+    @Published private(set) var playingMeasure: Int?
+    @Published private(set) var isPlayingFullScore = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var selectedNotes: [ScoreNoteSelection] = []
     var selectedNote: ScoreNoteSelection? { selectedNotes.first }
@@ -147,11 +149,29 @@ final class ScoreController: ObservableObject {
 
     func run(_ command: Command) {
         guard let webView, isReady else { errorMessage = "Partitur ist noch nicht bereit."; return }
+        switch command {
+        case .play: isPlayingFullScore = true
+        case .playMeasure: isPlayingFullScore = false
+        case .stop: playingMeasure = nil; isPlayingFullScore = false
+        case .exportMIDI: break
+        }
         webView.callAsyncJavaScript(command.script, arguments: [:], in: nil, in: .page) { [weak self] result in
             DispatchQueue.main.async {
-                if case .failure(let error) = result { self?.errorMessage = error.localizedDescription }
+                if case .failure(let error) = result {
+                    self?.isPlayingFullScore = false
+                    self?.errorMessage = error.localizedDescription
+                }
             }
         }
+    }
+
+    func playbackMoved(to measure: Int?) {
+        guard measure == nil || measure! >= 0 else {
+            report("Ungültiger Wiedergabetakt.")
+            return
+        }
+        playingMeasure = measure
+        if measure == nil { isPlayingFullScore = false }
     }
 
     func showMIDINotes(_ notes: [UInt8]) {
@@ -273,6 +293,7 @@ struct ScoreWebView: NSViewRepresentable {
     @Binding var height: CGFloat
     let controller: ScoreController
     var chordStyles: [ScoreChordStyle] = []
+    var centersMeasures = false
 
     func makeCoordinator() -> Coordinator { Coordinator(height: $height, controller: controller) }
 
@@ -280,7 +301,7 @@ struct ScoreWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
-        for name in ["abcNotationHeight", "abcNotationReady", "abcNotationMIDIExport", "abcNotationInteraction", "abcNotationSelection", "abcNotationTranspose"] {
+        for name in ["abcNotationHeight", "abcNotationReady", "abcNotationMIDIExport", "abcNotationInteraction", "abcNotationSelection", "abcNotationTranspose", "abcNotationPlaybackMeasure"] {
             configuration.userContentController.add(context.coordinator, name: name)
         }
         let view = WKWebView(frame: .zero, configuration: configuration)
@@ -292,15 +313,29 @@ struct ScoreWebView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.height = $height
         controller.setChordStyles(chordStyles)
-        guard abc != context.coordinator.loadedABC else { return }
+        guard abc != context.coordinator.loadedABC
+                || centersMeasures != context.coordinator.loadedCentersMeasures else { return }
         context.coordinator.loadedABC = abc
-        webView.loadHTMLString(Self.html(abc), baseURL: Self.scoreResourceURL)
+        context.coordinator.loadedCentersMeasures = centersMeasures
+        webView.loadHTMLString(Self.html(abc, centersMeasures: centersMeasures), baseURL: Self.scoreResourceURL)
     }
 
     private static var scoreResourceURL: URL? { ABCNotationDocument.resourceURL }
 
-    private static func html(_ source: String) -> String {
+    private static func html(_ source: String, centersMeasures: Bool) -> String {
+        let focusCSS = centersMeasures ? "body{padding-block:8px!important;scroll-padding-block:72px}" : ""
         let bridge = """
+        <style>
+        \(focusCSS)
+        .abcjs-title{transform:translateY(8px)}
+        .cartograph-abc-playing,.cartograph-abc-playing *,
+        .cartograph-abc-selected-measure,.cartograph-abc-selected-measure *,
+        .cartograph-abc-selected-chord,.cartograph-abc-selected-chord *{
+          fill:#39ff88!important;stroke:#39ff88!important;
+          filter:drop-shadow(0 0 2px #39ff88) drop-shadow(0 0 7px rgba(57,255,136,.9));
+        }
+        .cartograph-abc-chord-altered,.cartograph-abc-chord-altered *{fill:#ff375f!important;stroke:#ff375f!important}
+        </style>
         <script>function reportHeight(){requestAnimationFrame(()=>webkit.messageHandlers.abcNotationHeight.postMessage(Math.ceil(document.body.scrollHeight)))}
         function clearActiveMeasureLabel(){document.getElementById('chordflow-active-measure')?.remove()}
         function showActiveMeasureLabel(measure){
@@ -314,7 +349,7 @@ struct ScoreWebView: NSViewRepresentable {
           const label=document.createElement('div');
           label.id='chordflow-active-measure';
           label.textContent=`Takt ${Number(measure)+1}`;
-          Object.assign(label.style,{position:'absolute',zIndex:'20',left:`${Math.max(8,rect.left+window.scrollX)}px`,top:`${Math.max(4,rect.top+window.scrollY-27)}px`,padding:'3px 8px',borderRadius:'7px',background:'rgba(10,132,255,.92)',color:'white',font:'600 13px -apple-system,BlinkMacSystemFont,sans-serif',boxShadow:'0 2px 6px rgba(0,0,0,.18)',pointerEvents:'none'});
+          Object.assign(label.style,{position:'absolute',zIndex:'20',left:`${Math.max(8,rect.left+window.scrollX)}px`,top:`${Math.max(4,rect.top+window.scrollY-27)}px`,padding:'3px 8px',borderRadius:'7px',background:'rgba(57,255,136,.94)',color:'#062d16',font:'700 13px -apple-system,BlinkMacSystemFont,sans-serif',boxShadow:'0 0 4px rgba(57,255,136,.8),0 0 12px rgba(57,255,136,.55)',pointerEvents:'none'});
           document.body.appendChild(label);
           const target=elements.reduce((best,element)=>element.getBoundingClientRect().top<best.getBoundingClientRect().top?element:best,elements[0]);
           requestAnimationFrame(()=>target.scrollIntoView({block:'center',inline:'nearest',behavior:'smooth'}));
@@ -331,7 +366,7 @@ struct ScoreWebView: NSViewRepresentable {
           },{top:Number.POSITIVE_INFINITY,bottom:Number.NEGATIVE_INFINITY});
           return {top:rect.top+window.scrollY,height:Math.max(1,rect.bottom-rect.top)};
         }
-        cartoGraphABCReady.then(()=>{new ResizeObserver(reportHeight).observe(document.body);document.addEventListener('pointerdown',()=>webkit.messageHandlers.abcNotationInteraction.postMessage(true),{capture:true});reportHeight();webkit.messageHandlers.abcNotationReady.postMessage({measures:CartoGraphABC.measureCount()})})</script>
+        cartoGraphABCReady.then(()=>{new ResizeObserver(reportHeight).observe(document.body);document.addEventListener('pointerdown',()=>webkit.messageHandlers.abcNotationInteraction.postMessage(true),{capture:true});window.addEventListener('cartograph-abc-playback-measure',event=>webkit.messageHandlers.abcNotationPlaybackMeasure.postMessage(event.detail));reportHeight();webkit.messageHandlers.abcNotationReady.postMessage({measures:CartoGraphABC.measureCount()})})</script>
         """
         return ABCNotationDocument.html(source: source, bridgeScript: bridge)
     }
@@ -339,6 +374,7 @@ struct ScoreWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler {
         var height: Binding<CGFloat>
         var loadedABC: String?
+        var loadedCentersMeasures: Bool?
         let controller: ScoreController
 
         init(height: Binding<CGFloat>, controller: ScoreController) {
@@ -357,9 +393,17 @@ struct ScoreWebView: NSViewRepresentable {
             case "abcNotationInteraction": controller.interact()
             case "abcNotationSelection": receiveSelection(message.body)
             case "abcNotationTranspose": receiveTranspose(message.body)
+            case "abcNotationPlaybackMeasure": receivePlaybackMeasure(message.body)
             case "abcNotationMIDIExport": exportMIDI(message.body)
             default: report("Unbekannte Partiturmeldung: \(message.name)")
             }
+        }
+
+        private func receivePlaybackMeasure(_ body: Any) {
+            guard let value = body as? [String: Any] else { return report("Ungültiger Wiedergabestatus.") }
+            if value["measure"] is NSNull { controller.playbackMoved(to: nil); return }
+            guard let measure = value["measure"] as? NSNumber else { return report("Ungültiger Wiedergabetakt.") }
+            controller.playbackMoved(to: measure.intValue)
         }
 
         private func receiveSelection(_ body: Any) {

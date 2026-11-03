@@ -47,7 +47,7 @@ final class ChordflowTests: XCTestCase {
         let database = try ScoreDatabase(url: url)
         let scoreID = try database.createScore(title: "Live Set")
         let scenes = try database.scenes(scoreID: scoreID)
-        XCTAssertEqual(scenes.map(\.title), ["Szene 1"])
+        XCTAssertEqual(scenes.map(\.title), ["Abschnitt 1"])
         XCTAssertEqual(try database.tracks(sceneID: XCTUnwrap(scenes.first?.id)).map(\.name), ["Bass", "Melodie", "Akkorde"])
     }
 
