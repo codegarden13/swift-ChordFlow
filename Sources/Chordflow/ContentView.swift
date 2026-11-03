@@ -60,6 +60,12 @@ struct ContentView: View {
         }
         .onDisappear { midi.deactivate(sessionID) }
         .onChange(of: score.interactionCount) { _, _ in _ = midi.activate(sessionID) }
+        .onChange(of: score.selectedNotes) { _, selections in
+            if let selectedMeasure = selections.first?.measure { measure = selectedMeasure }
+        }
+        .onChange(of: measure) { _, selectedMeasure in
+            score.revealMeasure(selectedMeasure)
+        }
         .onChange(of: midi.notes) { _, notes in
             guard midi.isActive(sessionID) else { return }
             score.showMIDINotes(notes.map(\.number))
@@ -112,7 +118,7 @@ struct ContentView: View {
             HSplitView {
                 Group {
                     if workspaceMode == .tracks { editor(selectedScore, scene: selectedScene) }
-                    else { TheoryWorkspaceView(library: library, scene: selectedScene, mode: workspaceMode, scoreController: score, selectedArrangementChord: $selectedArrangementChord) }
+                    else { TheoryWorkspaceView(library: library, scene: selectedScene, mode: workspaceMode, scoreController: score, selectedArrangementChord: $selectedArrangementChord, selectedScoreMeasure: $measure) }
                 }.frame(minWidth: 480, idealWidth: 650)
                 preview(selectedScore, scene: selectedScene).frame(minWidth: 520)
             }
@@ -315,7 +321,7 @@ struct ContentView: View {
     }
 
     private func measureNumber(for event: ChordEvent) -> Int {
-        library.chordEvents.filter { $0.position < event.position }.reduce(0) { $0 + $1.beats } / 4 + 1
+        event.startBeat / 4 + 1
     }
 
     private func previewArrangementChord(_ event: ChordEvent) {

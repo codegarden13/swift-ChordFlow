@@ -152,11 +152,16 @@ final class ScoreDatabase {
                     root INTEGER NOT NULL CHECK(root BETWEEN 0 AND 11),
                     quality TEXT NOT NULL,
                     pitches TEXT NOT NULL,
-                    beats INTEGER NOT NULL DEFAULT 4 CHECK(beats BETWEEN 1 AND 32)
+                    beats INTEGER NOT NULL DEFAULT 4 CHECK(beats BETWEEN 1 AND 32),
+                    start_beat INTEGER NOT NULL DEFAULT 0 CHECK(start_beat >= 0)
                 );
                 CREATE INDEX IF NOT EXISTS chord_events_scene_position ON chord_events(scene_id, position);
                 """)
             if try !hasColumn("chord_events", column: "bass_pitch") { try execute("ALTER TABLE chord_events ADD COLUMN bass_pitch INTEGER") }
+            if try !hasColumn("chord_events", column: "start_beat") {
+                try execute("ALTER TABLE chord_events ADD COLUMN start_beat INTEGER NOT NULL DEFAULT 0")
+                try migrateChordStartBeats()
+            }
         } catch { sqlite3_close(database); throw error }
     }
 
@@ -187,14 +192,14 @@ final class ScoreDatabase {
         }
     }
     func chordEvents(sceneID: Int64) throws -> [ChordEvent] {
-        try query("SELECT id, position, root, quality, pitches, beats, bass_pitch FROM chord_events WHERE scene_id = ? ORDER BY position, id", binds: [.integer(sceneID)]) {
+        try query("SELECT id, position, root, quality, pitches, beats, start_beat, bass_pitch FROM chord_events WHERE scene_id = ? ORDER BY start_beat, position, id", binds: [.integer(sceneID)]) {
             let rawQuality = try Self.text($0, column: 3, field: "chord_events.quality")
             guard let quality = ChordQuality(rawValue: rawQuality) else { throw ScoreLibraryError.corruptData("Unbekannte Akkordqualität '\(rawQuality)'.") }
             let rawPitches = try Self.text($0, column: 4, field: "chord_events.pitches")
             let pitches = rawPitches.split(separator: ",").compactMap { Int($0) }
             guard !pitches.isEmpty else { throw ScoreLibraryError.corruptData("Akkord \(sqlite3_column_int64($0, 0)) enthält keine Tonhöhen.") }
-            let bassPitch = sqlite3_column_type($0, 6) == SQLITE_NULL ? nil : Int(sqlite3_column_int($0, 6))
-            return ChordEvent(id: sqlite3_column_int64($0, 0), sceneID: sceneID, position: Int(sqlite3_column_int($0, 1)), root: Int(sqlite3_column_int($0, 2)), quality: quality, pitches: pitches, beats: Int(sqlite3_column_int($0, 5)), bassPitch: bassPitch)
+            let bassPitch = sqlite3_column_type($0, 7) == SQLITE_NULL ? nil : Int(sqlite3_column_int($0, 7))
+            return ChordEvent(id: sqlite3_column_int64($0, 0), sceneID: sceneID, position: Int(sqlite3_column_int($0, 1)), root: Int(sqlite3_column_int($0, 2)), quality: quality, pitches: pitches, beats: Int(sqlite3_column_int($0, 5)), startBeat: Int(sqlite3_column_int($0, 6)), bassPitch: bassPitch)
         }
     }
 
@@ -218,7 +223,7 @@ final class ScoreDatabase {
             }
             for position in 0..<31 {
                 let harmony = ScoreDemo.harmony[position % ScoreDemo.harmony.count]
-                try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats, bass_pitch) VALUES (?, ?, ?, ?, ?, 16, ?)", binds: [.integer(sceneID), .integer(Int64(position)), .integer(Int64(harmony.root)), .text(harmony.quality.rawValue), .text(harmony.pitches.map(String.init).joined(separator: ",")), .integer(Int64(harmony.bass))])
+                try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats, start_beat, bass_pitch) VALUES (?, ?, ?, ?, ?, 16, ?, ?)", binds: [.integer(sceneID), .integer(Int64(position)), .integer(Int64(harmony.root)), .text(harmony.quality.rawValue), .text(harmony.pitches.map(String.init).joined(separator: ",")), .integer(Int64(position * 16)), .integer(Int64(harmony.bass))])
             }
             return scoreID
         }
@@ -262,20 +267,69 @@ final class ScoreDatabase {
     func deleteScore(id: Int64) throws { try run("DELETE FROM scores WHERE id = ?", binds: [.integer(id)]) }
     @discardableResult func addChord(sceneID: Int64, chord: TheoryChord, at requestedPosition: Int? = nil) throws -> Int64 {
         try transaction {
-            let count = Int(try scalarInt("SELECT count(*) FROM chord_events WHERE scene_id = ?", binds: [.integer(sceneID)]))
+            let events = try chordEvents(sceneID: sceneID)
+            let count = events.count
             let position = min(max(0, requestedPosition ?? count), count)
+            let startBeat = position < count ? events[position].startBeat : events.map { $0.startBeat + $0.beats }.max() ?? 0
             if position < count {
                 try run("UPDATE chord_events SET position = position + 1 WHERE scene_id = ? AND position >= ?", binds: [.integer(sceneID), .integer(Int64(position))])
+                try run("UPDATE chord_events SET start_beat = start_beat + 4 WHERE scene_id = ? AND start_beat >= ?", binds: [.integer(sceneID), .integer(Int64(startBeat))])
             }
-            try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats) VALUES (?, ?, ?, ?, ?, 4)", binds: [.integer(sceneID), .integer(Int64(position)), .integer(Int64(chord.root)), .text(chord.quality.rawValue), .text(chord.pitches.map(String.init).joined(separator: ","))])
+            try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats, start_beat) VALUES (?, ?, ?, ?, ?, 4, ?)", binds: [.integer(sceneID), .integer(Int64(position)), .integer(Int64(chord.root)), .text(chord.quality.rawValue), .text(chord.pitches.map(String.init).joined(separator: ",")), .integer(Int64(startBeat))])
+            return sqlite3_last_insert_rowid(handle)
+        }
+    }
+    @discardableResult func addChord(sceneID: Int64, chord: TheoryChord, atBeat startBeat: Int) throws -> Int64 {
+        guard startBeat >= 0 else { throw ScoreLibraryError.invalidInput("Die Akkordposition darf nicht vor Takt 1 liegen.") }
+        return try transaction {
+            let events = try chordEvents(sceneID: sceneID)
+            let endBeat = startBeat + 4
+            guard !events.contains(where: { $0.startBeat < endBeat && $0.startBeat + $0.beats > startBeat }) else {
+                throw ScoreLibraryError.invalidInput("An dieser Position liegt bereits ein Akkord. Wähle einen freien Takt oder ersetze den vorhandenen Akkord.")
+            }
+            let position = events.filter { $0.startBeat < startBeat }.count
+            try run("UPDATE chord_events SET position = position + 1 WHERE scene_id = ? AND position >= ?", binds: [.integer(sceneID), .integer(Int64(position))])
+            try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats, start_beat) VALUES (?, ?, ?, ?, ?, 4, ?)", binds: [.integer(sceneID), .integer(Int64(position)), .integer(Int64(chord.root)), .text(chord.quality.rawValue), .text(chord.pitches.map(String.init).joined(separator: ",")), .integer(Int64(startBeat))])
             return sqlite3_last_insert_rowid(handle)
         }
     }
     func updateChord(_ event: ChordEvent) throws {
-        try run("UPDATE chord_events SET position = ?, root = ?, quality = ?, pitches = ?, beats = ?, bass_pitch = ? WHERE id = ?", binds: [.integer(Int64(event.position)), .integer(Int64(event.root)), .text(event.quality.rawValue), .text(event.pitches.map(String.init).joined(separator: ",")), .integer(Int64(event.beats)), event.bassPitch.map { .integer(Int64($0)) } ?? .null, .integer(event.id)])
+        guard event.startBeat >= 0 else { throw ScoreLibraryError.invalidInput("Die Akkordposition darf nicht vor Takt 1 liegen.") }
+        let overlapCount = try scalarInt("SELECT count(*) FROM chord_events WHERE scene_id = ? AND id != ? AND start_beat < ? AND start_beat + beats > ?", binds: [.integer(event.sceneID), .integer(event.id), .integer(Int64(event.startBeat + event.beats)), .integer(Int64(event.startBeat))])
+        guard overlapCount == 0 else { throw ScoreLibraryError.invalidInput("Die geänderte Akkorddauer würde einen anderen Akkord überlappen.") }
+        try run("UPDATE chord_events SET position = ?, root = ?, quality = ?, pitches = ?, beats = ?, start_beat = ?, bass_pitch = ? WHERE id = ?", binds: [.integer(Int64(event.position)), .integer(Int64(event.root)), .text(event.quality.rawValue), .text(event.pitches.map(String.init).joined(separator: ",")), .integer(Int64(event.beats)), .integer(Int64(event.startBeat)), event.bassPitch.map { .integer(Int64($0)) } ?? .null, .integer(event.id)])
     }
-    func deleteChord(id: Int64) throws { try run("DELETE FROM chord_events WHERE id = ?", binds: [.integer(id)]) }
-    func reorderChords(_ ids: [Int64]) throws { try transaction { for (position, id) in ids.enumerated() { try run("UPDATE chord_events SET position = ? WHERE id = ?", binds: [.integer(Int64(position)), .integer(id)]) } } }
+    func deleteChord(id: Int64) throws {
+        try transaction {
+            guard let sceneID = try query("SELECT scene_id FROM chord_events WHERE id = ?", binds: [.integer(id)], map: { sqlite3_column_int64($0, 0) }).first else { return }
+            try run("DELETE FROM chord_events WHERE id = ?", binds: [.integer(id)])
+            for (position, event) in try chordEvents(sceneID: sceneID).enumerated() {
+                try run("UPDATE chord_events SET position = ? WHERE id = ?", binds: [.integer(Int64(position)), .integer(event.id)])
+            }
+        }
+    }
+    func reorderChords(_ ids: [Int64]) throws {
+        guard !ids.isEmpty else { return }
+        try transaction {
+            let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+            let events = try query("SELECT id, scene_id, start_beat, beats FROM chord_events WHERE id IN (\(placeholders)) ORDER BY start_beat, position, id", binds: ids.map(BindValue.integer)) {
+                (id: sqlite3_column_int64($0, 0), sceneID: sqlite3_column_int64($0, 1), startBeat: Int(sqlite3_column_int($0, 2)), beats: Int(sqlite3_column_int($0, 3)))
+            }
+            guard events.count == ids.count, Set(events.map(\.sceneID)).count == 1 else {
+                throw ScoreLibraryError.invalidInput("Die Akkordfolge enthält fehlende Akkorde oder Akkorde aus verschiedenen Szenen.")
+            }
+            let slots = events.map(\.startBeat)
+            let eventByID = Dictionary(uniqueKeysWithValues: events.map { ($0.id, $0) })
+            for index in ids.indices where index + 1 < slots.count {
+                guard let event = eventByID[ids[index]], slots[index] + event.beats <= slots[index + 1] else {
+                    throw ScoreLibraryError.invalidInput("Diese Reihenfolge passt zeitlich nicht in die vorhandenen Akkordplätze.")
+                }
+            }
+            for (position, id) in ids.enumerated() {
+                try run("UPDATE chord_events SET position = ?, start_beat = ? WHERE id = ?", binds: [.integer(Int64(position)), .integer(Int64(slots[position])), .integer(id)])
+            }
+        }
+    }
     func transposeChords(sceneID: Int64, semitones: Int) throws {
         try transaction {
             for var event in try chordEvents(sceneID: sceneID) {
@@ -290,6 +344,17 @@ final class ScoreDatabase {
     private func addDefaultTracks(sceneID: Int64) throws {
         for (position, name) in ScoreDefaults.trackNames.enumerated() {
             try run("INSERT INTO tracks(scene_id, name, abc, position) VALUES (?, ?, ?, ?)", binds: [.integer(sceneID), .text(name), .text(ScoreDefaults.trackABC[position]), .integer(Int64(position))])
+        }
+    }
+    private func migrateChordStartBeats() throws {
+        let sceneIDs = try query("SELECT DISTINCT scene_id FROM chord_events", map: { sqlite3_column_int64($0, 0) })
+        for sceneID in sceneIDs {
+            let rows = try query("SELECT id, beats FROM chord_events WHERE scene_id = ? ORDER BY position, id", binds: [.integer(sceneID)]) { (sqlite3_column_int64($0, 0), Int(sqlite3_column_int($0, 1))) }
+            var startBeat = 0
+            for (id, beats) in rows {
+                try run("UPDATE chord_events SET start_beat = ? WHERE id = ?", binds: [.integer(Int64(startBeat)), .integer(id)])
+                startBeat += beats
+            }
         }
     }
     private func touch(_ scoreID: Int64) throws { try run("UPDATE scores SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", binds: [.integer(scoreID)]) }
@@ -351,6 +416,7 @@ final class ScoreDatabase {
     func updateScene(_ scene: ScoreScene) { perform("Szene konnte nicht gespeichert werden") { try $0.updateScene(scene); if let index = scenes.firstIndex(where: { $0.id == scene.id }) { scenes[index] = scene } } }
     func updateTrack(_ track: ScoreTrack) { guard let scoreID = selectedScoreID else { return }; perform("Spur konnte nicht gespeichert werden") { try $0.updateTrack(track, scoreID: scoreID); if let index = tracks.firstIndex(where: { $0.id == track.id }) { tracks[index] = track } } }
     func addChord(_ chord: TheoryChord) { guard let sceneID = selectedSceneID else { return }; perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord); chordEvents = try $0.chordEvents(sceneID: sceneID) } }
+    @discardableResult func addChord(_ chord: TheoryChord, atBeat startBeat: Int) -> Bool { guard let sceneID = selectedSceneID else { return false }; var succeeded = false; perform("Akkord konnte nicht eingesetzt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord, atBeat: startBeat); chordEvents = try $0.chordEvents(sceneID: sceneID); succeeded = true }; return succeeded }
     func insertChord(_ chord: TheoryChord, before eventID: Int64) {
         guard let sceneID = selectedSceneID, let position = chordEvents.first(where: { $0.id == eventID })?.position else { return }
         perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord, at: position); chordEvents = try $0.chordEvents(sceneID: sceneID) }
@@ -381,12 +447,13 @@ final class ScoreDatabase {
 
 enum ABCScoreBuilder {
     static func build(score: Score, scene: ScoreScene, tracks: [ScoreTrack], chords: [ChordEvent] = []) -> String {
-        let chordBeats = chords.reduce(0) { $0 + $1.beats }
-        let sceneBeats = max(chordBeats, tracks.map { ABCTrackTiming.duration(of: $0.abc) }.max() ?? 0)
+        let chordBeats = chords.map { $0.startBeat + $0.beats }.max() ?? 0
+        let rawSceneBeats = max(chordBeats, tracks.map { ABCTrackTiming.duration(of: $0.abc) }.max() ?? 0)
+        let sceneBeats = ((rawSceneBeats + 3) / 4) * 4
         let voices = tracks.enumerated().map { index, track in
             let content: String
-            if !chords.isEmpty && track.name == "Akkorde" { content = ABCTrackTiming.fitted(chordABC(chords), to: sceneBeats, mode: .pad) }
-            else if !chords.isEmpty && track.name == "Bass" { content = ABCTrackTiming.fitted(bassABC(chords), to: sceneBeats, mode: .pad) }
+            if !chords.isEmpty && track.name == "Akkorde" { content = chordABC(chords, totalBeats: sceneBeats) }
+            else if !chords.isEmpty && track.name == "Bass" { content = bassABC(chords, totalBeats: sceneBeats) }
             else { content = ABCTrackTiming.fitted(track.abc, to: sceneBeats, mode: track.endMode) }
             let clef = track.position == 0 || track.name.compare("Bass", options: .caseInsensitive) == .orderedSame ? "bass" : "treble"
             // The visually identical Cyrillic е makes the layout placeholder unambiguous in the renderer.
@@ -396,13 +463,44 @@ enum ABCScoreBuilder {
     }
 
     static func sceneBeats(tracks: [ScoreTrack], chords: [ChordEvent]) -> Int {
-        max(chords.reduce(0) { $0 + $1.beats }, tracks.map { ABCTrackTiming.duration(of: $0.abc) }.max() ?? 0)
+        max(chords.map { $0.startBeat + $0.beats }.max() ?? 0, tracks.map { ABCTrackTiming.duration(of: $0.abc) }.max() ?? 0)
     }
-    private static func chordABC(_ events: [ChordEvent]) -> String {
-        events.map { event in "\"\(event.chord.symbol)\"[\(event.pitches.map(MusicTheory.abcNote).joined())]\(event.beats) |" }.joined(separator: " ")
+    private static func chordABC(_ events: [ChordEvent], totalBeats: Int) -> String {
+        timedABC(events, totalBeats: totalBeats) { event, duration, isFirstChunk, continues in
+            let symbol = isFirstChunk ? "\"\(event.chord.symbol)\"" : ""
+            return "\(symbol)[\(event.pitches.map(MusicTheory.abcNote).joined())]\(duration)\(continues ? "-" : "")"
+        }
     }
-    private static func bassABC(_ events: [ChordEvent]) -> String {
-        events.map { event in "\(MusicTheory.abcNote(event.bassPitch ?? 36 + event.root))\(event.beats) |" }.joined(separator: " ")
+    private static func bassABC(_ events: [ChordEvent], totalBeats: Int) -> String {
+        timedABC(events, totalBeats: totalBeats) { event, duration, _, continues in
+            "\(MusicTheory.abcNote(event.bassPitch ?? 36 + event.root))\(duration)\(continues ? "-" : "")"
+        }
+    }
+    private static func timedABC(_ events: [ChordEvent], totalBeats: Int, render: (ChordEvent, Int, Bool, Bool) -> String) -> String {
+        var cursor = 0, parts: [String] = []
+        func append(_ token: String, duration: Int) {
+            parts.append(token)
+            cursor += duration
+            if cursor.isMultiple(of: 4) { parts.append("|") }
+        }
+        func appendRests(until target: Int) {
+            while cursor < target {
+                let duration = min(target - cursor, 4 - cursor % 4)
+                append("z\(duration)", duration: duration)
+            }
+        }
+        for event in events.sorted(by: { ($0.startBeat, $0.position) < ($1.startBeat, $1.position) }) {
+            appendRests(until: event.startBeat)
+            var remaining = event.beats, isFirstChunk = true
+            while remaining > 0 {
+                let duration = min(remaining, 4 - cursor % 4)
+                append(render(event, duration, isFirstChunk, remaining > duration), duration: duration)
+                remaining -= duration
+                isFirstChunk = false
+            }
+        }
+        appendRests(until: totalBeats)
+        return parts.joined(separator: " ")
     }
     private static func escaped(_ value: String) -> String { value.replacingOccurrences(of: "\"", with: "'") }
 

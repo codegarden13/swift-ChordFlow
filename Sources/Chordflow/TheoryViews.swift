@@ -10,6 +10,7 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
 }
 
 private enum ChordLabDestination: Hashable {
+    case timelinePosition
     case append
     case insertBefore(Int64)
     case replace(Int64)
@@ -27,10 +28,13 @@ struct TheoryWorkspaceView: View {
     let mode: WorkspaceMode
     let scoreController: ScoreController
     @Binding var selectedArrangementChord: ChordEvent?
+    @Binding var selectedScoreMeasure: Int
     @State private var root = 0
     @State private var quality = ChordQuality.major
     @State private var pitches = TheoryChord(root: 0, quality: .major).pitches
-    @State private var chordDestination = ChordLabDestination.append
+    @State private var chordDestination = ChordLabDestination.timelinePosition
+    @State private var insertionMeasure = 0
+    @State private var insertionBeat = 0
     @State private var sceneActionMessage: String?
     @State private var snapsToScale = true
     @State private var automaticallyPreviewsChord = true
@@ -204,6 +208,7 @@ struct TheoryWorkspaceView: View {
                     Picker("Akkord", selection: Binding(get: { quality }, set: { quality = $0; resetVoicing() })) { ForEach(ChordQuality.allCases) { Text($0.title).tag($0) } }.frame(maxWidth: 240)
                     Spacer()
                 }
+                sceneDestinationPanel
                 HStack {
                     Button("Lage höher ↑") { invert(up: true) }
                         .help("Den tiefsten Akkordton eine Oktave nach oben setzen")
@@ -220,7 +225,6 @@ struct TheoryWorkspaceView: View {
                     Toggle("Nach Änderungen automatisch spielen", isOn: $automaticallyPreviewsChord).toggleStyle(.switch)
                     Spacer()
                 }
-                sceneDestinationPanel
                 ScoreWebView(abc: chordNotationSource, height: $chordNotationHeight, controller: chordNotationController)
                     .frame(height: min(max(chordNotationHeight, 220), 340))
                 VoicingPitchEditor(pitches: pitches, tonic: scene.tonic, scale: scene.scale) { index, pitch in
@@ -242,20 +246,30 @@ struct TheoryWorkspaceView: View {
             guard case let .replace(id) = destination, let event = library.chordEvents.first(where: { $0.id == id }) else { return }
             root = event.root; quality = event.quality; pitches = event.pitches
         }
+        .onChange(of: scoreController.selectedNotes) { _, selections in
+            if let selectedMeasure = selections.first?.measure {
+                insertionMeasure = min(max(0, selectedMeasure), max(0, sceneMeasureCount - 1))
+                chordDestination = .timelinePosition
+            }
+        }
+        .onChange(of: selectedScoreMeasure) { _, selectedMeasure in
+            insertionMeasure = min(max(0, selectedMeasure), max(0, sceneMeasureCount - 1))
+        }
         .onChange(of: pitches) { _, _ in if automaticallyPreviewsChord { previewChord() } }
         .onChange(of: automaticallyPreviewsChord) { _, enabled in if enabled { previewChord() } else { MIDIService.shared.stopChordPreview() } }
-        .onAppear { if automaticallyPreviewsChord { previewChord() } }
+        .onAppear {
+            insertionMeasure = min(max(0, selectedScoreMeasure), max(0, sceneMeasureCount - 1))
+            if automaticallyPreviewsChord { previewChord() }
+        }
         .onDisappear { MIDIService.shared.stopChordPreview() }
     }
 
     private var sceneDestinationPanel: some View {
         GroupBox("In Szene übernehmen") {
             VStack(alignment: .leading, spacing: 10) {
-                if library.chordEvents.isEmpty {
-                    Label("Die Szene ist leer. Dieser Akkord wird der erste Akkord und beginnt in Takt 1.", systemImage: "1.circle.fill")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Picker("Aktion und Position", selection: $chordDestination) {
+                Picker("Aktion", selection: $chordDestination) {
+                    Text("In ausgewählten Takt einsetzen").tag(ChordLabDestination.timelinePosition)
+                    if !library.chordEvents.isEmpty {
                         Section("Einfügen") {
                             Text("Am Ende · ab Takt \(appendMeasure)").tag(ChordLabDestination.append)
                             ForEach(library.chordEvents) { event in
@@ -268,9 +282,25 @@ struct TheoryWorkspaceView: View {
                             }
                         }
                     }
-                    .frame(maxWidth: 420)
-                    Text(destinationExplanation).font(.caption).foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: 420)
+                if chordDestination == .timelinePosition {
+                    HStack(spacing: 14) {
+                        Stepper("Takt \(insertionMeasure + 1)", value: Binding(
+                            get: { insertionMeasure },
+                            set: { insertionMeasure = $0; selectedScoreMeasure = $0 }
+                        ), in: 0...max(0, sceneMeasureCount - 1))
+                            .frame(width: 150)
+                        Picker("Zählzeit", selection: $insertionBeat) {
+                            ForEach(0..<4, id: \.self) { Text("\($0 + 1)").tag($0) }
+                        }
+                        .frame(width: 130)
+                    }
+                    Label("Die Taktauswahl rechts oben und Klicks auf Noten werden übernommen. Du kannst Takt und Zählzeit auch direkt einstellen.", systemImage: "cursorarrow.click.2")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(destinationExplanation).font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button(destinationButtonTitle, systemImage: destinationButtonIcon) { applyChordToScene() }
                         .buttonStyle(.borderedProminent)
@@ -284,12 +314,14 @@ struct TheoryWorkspaceView: View {
         }
     }
 
-    private var appendMeasure: Int { library.chordEvents.reduce(0) { $0 + $1.beats } / 4 + 1 }
+    private var sceneMeasureCount: Int { max(1, (ABCScoreBuilder.sceneBeats(tracks: library.tracks, chords: library.chordEvents) + 3) / 4) }
+    private var appendMeasure: Int { (library.chordEvents.map { $0.startBeat + $0.beats }.max() ?? 0) / 4 + 1 }
     private func measureNumber(for event: ChordEvent) -> Int {
-        library.chordEvents.filter { $0.position < event.position }.reduce(0) { $0 + $1.beats } / 4 + 1
+        event.startBeat / 4 + 1
     }
     private var destinationExplanation: String {
         switch chordDestination {
+        case .timelinePosition: return "Der Akkord beginnt in Takt \(insertionMeasure + 1) auf Zählzeit \(insertionBeat + 1), ohne frühere Takte zu verschieben."
         case .append: return "Der Akkord wird nach der vorhandenen Folge eingefügt und beginnt ab Takt \(appendMeasure)."
         case let .insertBefore(id):
             guard let event = library.chordEvents.first(where: { $0.id == id }) else { return "Wähle eine gültige Einfügeposition." }
@@ -300,21 +332,19 @@ struct TheoryWorkspaceView: View {
         }
     }
     private var destinationButtonTitle: String {
-        if library.chordEvents.isEmpty { return "Als ersten Akkord in Takt 1 einfügen" }
-        switch chordDestination { case .append: return "Am Ende einfügen"; case .insertBefore: return "An Position einfügen"; case .replace: return "Akkord ersetzen" }
+        switch chordDestination { case .timelinePosition: return "In Takt \(insertionMeasure + 1) einsetzen"; case .append: return "Am Ende einfügen"; case .insertBefore: return "An Position einfügen"; case .replace: return "Akkord ersetzen" }
     }
     private var destinationButtonIcon: String {
         if case .replace = chordDestination { return "arrow.triangle.2.circlepath" }
         return "plus"
     }
     private func applyChordToScene() {
-        if library.chordEvents.isEmpty {
-            library.addChord(chord)
-            chordDestination = .append
-            sceneActionMessage = "\(chord.symbol) beginnt in Takt 1."
-            return
-        }
         switch chordDestination {
+        case .timelinePosition:
+            let startBeat = insertionMeasure * 4 + insertionBeat
+            if library.addChord(chord, atBeat: startBeat) {
+                sceneActionMessage = "\(chord.symbol) beginnt in Takt \(insertionMeasure + 1) auf Zählzeit \(insertionBeat + 1)."
+            }
         case .append:
             let measure = appendMeasure
             library.addChord(chord)

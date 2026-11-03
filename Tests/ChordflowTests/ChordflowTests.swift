@@ -145,6 +145,23 @@ final class ChordflowTests: XCTestCase {
         XCTAssertEqual(events.map(\.position), [0, 1, 2])
     }
 
+    func testChordCanStartAfterEmptyMeasuresWithoutMovingTimeline() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let scoreID = try database.createScore()
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+
+        _ = try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 9, quality: .minor), atBeat: 41)
+        let event = try XCTUnwrap(database.chordEvents(sceneID: scene.id).first)
+        let abc = ABCScoreBuilder.build(score: Score(id: scoreID, title: "Zeitachse"), scene: scene, tracks: try database.tracks(sceneID: scene.id), chords: [event])
+
+        XCTAssertEqual(event.startBeat, 41)
+        XCTAssertEqual(ABCScoreBuilder.sceneBeats(tracks: [], chords: [event]), 45)
+        XCTAssertTrue(abc.contains("z4 | z1 \"Am\"[Ace]3- | [Ace]1 z3 |"))
+        XCTAssertThrowsError(try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 0, quality: .major), atBeat: 42))
+    }
+
     func testSceneAndTrackScaleChoicesPersist() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }

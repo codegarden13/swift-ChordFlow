@@ -80,6 +80,7 @@ struct ChordEvent: Identifiable, Equatable, Sendable {
     var quality: ChordQuality
     var pitches: [Int]
     var beats: Int
+    var startBeat: Int = 0
     var bassPitch: Int? = nil
     var chord: TheoryChord { TheoryChord(root: root, quality: quality, pitches: pitches) }
 }

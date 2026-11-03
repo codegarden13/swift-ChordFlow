@@ -44,6 +44,7 @@ final class ScoreController: ObservableObject {
     var selectionHandler: ((ScoreNoteSelection) -> Void)?
     private weak var webView: WKWebView?
     private var highlightedChord: (measure: Int, pitches: [Int])?
+    private var revealedMeasure: Int?
     private var selectedPitch: Int?
     private var marqueeSelectionEnabled = false
     private var selectedNoteColor = "#0a84ff"
@@ -64,6 +65,7 @@ final class ScoreController: ObservableObject {
         applySelectedNoteColor()
         setMarqueeSelectionEnabled(marqueeSelectionEnabled)
         if selectedPitch != nil { applySelectedPitch() } else { applySelectedNote() }
+        applyRevealedMeasure()
     }
 
     func interact() { interactionCount &+= 1 }
@@ -168,6 +170,46 @@ final class ScoreController: ObservableObject {
         applyHighlight()
     }
 
+    func revealMeasure(_ measure: Int) {
+        guard measure >= 0 else { return }
+        revealedMeasure = measure
+        applyRevealedMeasure()
+    }
+
+    private func applyRevealedMeasure() {
+        guard let webView, isReady, let revealedMeasure else { return }
+        webView.callAsyncJavaScript(
+            "return revealScoreMeasure(measure)",
+            arguments: ["measure": revealedMeasure],
+            in: nil,
+            in: .page
+        ) { [weak self, weak webView] result in
+            DispatchQueue.main.async {
+                guard let self, let webView else { return }
+                switch result {
+                case .success(let value):
+                    guard let position = value as? [String: Any],
+                          let top = position["top"] as? NSNumber,
+                          let height = position["height"] as? NSNumber else {
+                        self.report("Takt \(revealedMeasure + 1) konnte in der Partitur nicht gefunden werden.")
+                        return
+                    }
+                    let margin: CGFloat = 80
+                    let rect = NSRect(
+                        x: 0,
+                        y: max(0, CGFloat(truncating: top) - margin),
+                        width: max(1, webView.bounds.width),
+                        height: max(1, CGFloat(truncating: height) + margin * 2)
+                    )
+                    webView.scrollToVisible(rect)
+                    self.errorMessage = nil
+                case .failure(let error):
+                    self.report("Taktposition konnte nicht angezeigt werden: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     func clearHighlight() {
         highlightedChord = nil
         guard let webView, isReady else { return }
@@ -270,6 +312,16 @@ struct ScoreWebView: NSViewRepresentable {
     private static func html(_ source: String) -> String {
         let bridge = """
         <script>function reportHeight(){requestAnimationFrame(()=>webkit.messageHandlers.abcNotationHeight.postMessage(Math.ceil(document.body.scrollHeight)))}
+        function revealScoreMeasure(measure){
+          CartoGraphABC.highlightChord(Number(measure),[]);
+          const elements=Array.from(document.querySelectorAll('.cartograph-abc-selected-measure'));
+          if(!elements.length)return null;
+          const rect=elements.reduce((result,element)=>{
+            const current=element.getBoundingClientRect();
+            return {top:Math.min(result.top,current.top),bottom:Math.max(result.bottom,current.bottom)};
+          },{top:Number.POSITIVE_INFINITY,bottom:Number.NEGATIVE_INFINITY});
+          return {top:rect.top+window.scrollY,height:Math.max(1,rect.bottom-rect.top)};
+        }
         cartoGraphABCReady.then(()=>{new ResizeObserver(reportHeight).observe(document.body);document.addEventListener('pointerdown',()=>webkit.messageHandlers.abcNotationInteraction.postMessage(true),{capture:true});reportHeight();webkit.messageHandlers.abcNotationReady.postMessage({measures:CartoGraphABC.measureCount()})})</script>
         """
         return ABCNotationDocument.html(source: source, bridgeScript: bridge)
