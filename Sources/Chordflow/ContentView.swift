@@ -28,18 +28,7 @@ struct ContentView: View {
             }
             .navigationSplitViewStyle(.balanced)
 
-            if let event = selectedArrangementChord, let scene = library.selectedScene {
-                ArrangementChordDetail(event: event, scene: scene, measure: measureNumber(for: event), update: { changed in
-                    library.updateChord(changed)
-                    selectedArrangementChord = changed
-                    previewArrangementChord(changed)
-                }, close: {
-                    selectedArrangementChord = nil
-                    MIDIService.shared.stopChordPreview()
-                })
-                .transition(.scale(scale: 0.96).combined(with: .opacity))
-                .zIndex(10)
-            }
+            arrangementChordOverlay
         }
         .frame(minWidth: 1_100, minHeight: 700)
         .animation(.easeOut(duration: 0.16), value: selectedArrangementChord?.id)
@@ -85,6 +74,54 @@ struct ContentView: View {
         .alert("Aktion nicht möglich", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
             Button("OK", role: .cancel) { library.errorMessage = nil }
         } message: { Text(library.errorMessage ?? "Unbekannter Fehler") }
+    }
+
+    @ViewBuilder private var arrangementChordOverlay: some View {
+        if let selectedArrangementChord,
+           let event = library.chordEvents.first(where: { $0.id == selectedArrangementChord.id }),
+           let scene = library.selectedScene {
+            let initialDraft = library.chordDraft(id: event.id) ?? event
+            ArrangementChordDetail(
+                event: event,
+                initialDraft: initialDraft,
+                scene: scene,
+                measure: measure + 1,
+                stage: stageArrangementDraft,
+                save: saveArrangementDraft,
+                discard: { discardArrangementDraft(event) },
+                canNavigate: canNavigateArrangementChord,
+                navigate: navigateArrangementChord,
+                canNavigateMeasure: canNavigateArrangementMeasure,
+                navigateMeasure: navigateArrangementMeasure,
+                close: closeArrangementChord
+            )
+            .transition(.scale(scale: 0.96).combined(with: .opacity))
+            .zIndex(10)
+        }
+    }
+
+    private func stageArrangementDraft(_ changed: ChordEvent) {
+        library.stageChordDraft(changed)
+        selectedArrangementChord = changed
+        previewArrangementChord(changed)
+    }
+
+    private func saveArrangementDraft(_ changed: ChordEvent) {
+        library.stageChordDraft(changed)
+        guard library.saveChordDraft(id: changed.id), let saved = library.chordEvents.first(where: { $0.id == changed.id }) else { return }
+        selectedArrangementChord = saved
+        previewArrangementChord(saved)
+    }
+
+    private func discardArrangementDraft(_ saved: ChordEvent) {
+        library.discardChordDraft(id: saved.id)
+        selectedArrangementChord = saved
+        previewArrangementChord(saved)
+    }
+
+    private func closeArrangementChord() {
+        selectedArrangementChord = nil
+        MIDIService.shared.stopChordPreview()
     }
 
     private var sidebar: some View {
@@ -248,7 +285,7 @@ struct ContentView: View {
     }
 
     private func preview(_ selectedScore: Score, scene selectedScene: ScoreScene) -> some View {
-        let abc = ABCScoreBuilder.build(score: selectedScore, scene: selectedScene, tracks: library.tracks, chords: library.chordEvents)
+        let abc = ABCScoreBuilder.build(score: selectedScore, scene: selectedScene, tracks: library.tracks, chords: library.displayedChordEvents)
         let chordStyles = scoreChordStyles()
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -285,10 +322,12 @@ struct ContentView: View {
     }
 
     private func scoreChordStyles() -> [ScoreChordStyle] {
-        guard let trackIndex = library.tracks.firstIndex(where: { $0.name.compare("Akkorde", options: .caseInsensitive) == .orderedSame }) else { return [] }
-        return library.chordEvents.enumerated().map { noteIndex, event in
+        guard let trackIndex = library.tracks.firstIndex(where: {
+            $0.name.localizedCaseInsensitiveContains("akkord") || $0.name.localizedCaseInsensitiveContains("chord")
+        }) else { return [] }
+        return library.displayedChordEvents.enumerated().map { noteIndex, event in
             let analysis = MusicTheory.analyzeVoicing(event.chord)
-            return ScoreChordStyle(trackIndex: trackIndex, noteIndex: noteIndex, role: analysis.role)
+            return ScoreChordStyle(trackIndex: trackIndex, noteIndex: noteIndex, role: event.isDraft ? .altered : analysis.role)
         }
     }
 
@@ -312,12 +351,7 @@ struct ContentView: View {
 
     private func chord(atMeasure measure: Int) -> ChordEvent? {
         let beat = max(0, measure) * 4
-        var start = 0
-        for event in library.chordEvents {
-            if beat < start + event.beats { return event }
-            start += event.beats
-        }
-        return nil
+        return library.displayedChordEvents.first { $0.startBeat <= beat && $0.startBeat + $0.beats > beat }
     }
 
     private func measureNumber(for event: ChordEvent) -> Int {
@@ -328,6 +362,43 @@ struct ContentView: View {
         measure = measureNumber(for: event) - 1
         MIDIService.shared.previewChord(event.pitches)
         score.highlightChord(measure: measureNumber(for: event) - 1, pitches: event.pitches)
+    }
+
+    private func canNavigateArrangementChord(by offset: Int) -> Bool {
+        guard let selectedArrangementChord,
+              let index = library.chordEvents.firstIndex(where: { $0.id == selectedArrangementChord.id }) else { return false }
+        return library.chordEvents.indices.contains(index + offset)
+    }
+
+    private func navigateArrangementChord(by offset: Int) {
+        guard let selectedArrangementChord,
+              let index = library.chordEvents.firstIndex(where: { $0.id == selectedArrangementChord.id }),
+              library.chordEvents.indices.contains(index + offset) else { return }
+        let event = library.displayedChordEvents[index + offset]
+        self.selectedArrangementChord = event
+        previewArrangementChord(event)
+    }
+
+    private var arrangementMeasureCount: Int {
+        max(1, (ABCScoreBuilder.sceneBeats(tracks: library.tracks, chords: library.chordEvents) + 3) / 4)
+    }
+
+    private func canNavigateArrangementMeasure(by offset: Int) -> Bool {
+        (0..<arrangementMeasureCount).contains(measure + offset)
+    }
+
+    private func navigateArrangementMeasure(by offset: Int) {
+        let target = measure + offset
+        guard (0..<arrangementMeasureCount).contains(target) else { return }
+        measure = target
+        if let event = chord(atMeasure: target) {
+            selectedArrangementChord = event
+            MIDIService.shared.previewChord(event.pitches)
+            score.highlightChord(measure: target, pitches: event.pitches)
+        } else {
+            score.highlightChord(measure: target, pitches: [])
+            MIDIService.shared.stopChordPreview()
+        }
     }
 
     private func toneColor(_ role: ToneRole) -> Color {
@@ -342,12 +413,7 @@ struct ContentView: View {
         guard let scene = library.selectedScene, library.tracks.indices.contains(selection.trackIndex) else { return nil }
         let track = library.tracks[selection.trackIndex]
         let beat = max(0, selection.measure) * 4
-        var start = 0
-        var chord: TheoryChord?
-        for event in library.chordEvents {
-            if beat < start + event.beats { chord = event.chord; break }
-            start += event.beats
-        }
+        let chord = library.chordEvents.first { $0.startBeat <= beat && $0.startBeat + $0.beats > beat }?.chord
         return MusicTheory.analyzeTone(selection.midi, tonic: scene.tonic, sceneScale: scene.scale, trackScale: track.scaleOverride ?? scene.scale, chord: chord).role
     }
 
@@ -509,7 +575,7 @@ private struct ChordColorLegend: View {
         HStack(spacing: 14) {
             legend("Grundstellung", color: .blue)
             legend("Umkehrung", color: .purple)
-            legend("veränderte Akkordstruktur", color: .orange)
+            legend("veränderte Struktur / Entwurf", color: .orange)
             Text("Die Auswahl wird weiterhin rot hervorgehoben.").foregroundStyle(.secondary)
         }
         .font(.caption)

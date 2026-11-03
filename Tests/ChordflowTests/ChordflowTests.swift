@@ -182,6 +182,32 @@ final class ChordflowTests: XCTestCase {
         XCTAssertEqual(events.map(\.position), [0, 1, 2, 3])
     }
 
+    @MainActor func testChordDraftRemainsTransientUntilExplicitSave() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let library = ScoreLibrary(database: database)
+        let saved = try XCTUnwrap(library.chordEvents.first)
+        var draft = saved
+        draft.root = MusicTheory.normalized(saved.root + 1)
+        draft.pitches = draft.pitches.map { $0 + 1 }
+
+        library.stageChordDraft(draft)
+
+        XCTAssertEqual(library.chordEvents.first?.root, saved.root)
+        XCTAssertEqual(library.displayedChordEvents.first?.root, draft.root)
+        XCTAssertEqual(library.displayedChordEvents.first?.isDraft, true)
+        let score = try XCTUnwrap(library.selectedScore)
+        let scene = try XCTUnwrap(library.selectedScene)
+        let abc = ABCScoreBuilder.build(score: score, scene: scene, tracks: library.tracks, chords: library.displayedChordEvents)
+        XCTAssertTrue(abc.contains("· Entwurf"))
+        XCTAssertTrue(abc.contains("%%voicecolor lightgray"))
+        XCTAssertTrue(abc.contains("[\(saved.pitches.map(MusicTheory.abcNote).joined())]"))
+        XCTAssertTrue(library.saveChordDraft(id: saved.id))
+        XCTAssertEqual(library.chordEvents.first?.root, draft.root)
+        XCTAssertNil(library.chordDraft(id: saved.id))
+    }
+
     func testSceneAndTrackScaleChoicesPersist() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }

@@ -445,6 +445,7 @@ final class ScoreDatabase {
     private static let logger = Logger(subsystem: "de.xviz.Chordflow", category: "library")
     private var database: ScoreDatabase?
     @Published private(set) var scores: [Score] = []; @Published private(set) var scenes: [ScoreScene] = []; @Published private(set) var tracks: [ScoreTrack] = []; @Published private(set) var chordEvents: [ChordEvent] = []
+    @Published private(set) var chordDrafts: [Int64: ChordEvent] = [:]
     @Published var selectedScoreID: Int64?; @Published var selectedSceneID: Int64?; @Published var errorMessage: String?
 
     init(database: ScoreDatabase? = nil) { do { self.database = try database ?? ScoreDatabase(); let demoID = try self.database?.createInitialDemoIfNeeded(); try reloadScores(selecting: demoID) } catch { report(error, context: "Partituren konnten nicht geladen werden") } }
@@ -452,7 +453,34 @@ final class ScoreDatabase {
     func addScore() { perform("Partitur konnte nicht angelegt werden") { let id = try $0.createScore(); try reloadScores(selecting: id) } }
     func addTimelineScore(title: String, startYear: Int, endYear: Int) { perform("Zeitachsen-Partitur konnte nicht angelegt werden") { let id = try $0.createTimelineScore(title: title, startYear: startYear, endYear: endYear); try reloadScores(selecting: id) } }
     func selectScore(_ id: Int64?) { selectedScoreID = id; perform("Partitur konnte nicht geladen werden") { _ in try loadSelectedScore() } }
-    func selectScene(_ id: Int64?) { selectedSceneID = id; perform("Szene konnte nicht geladen werden") { tracks = try id.map($0.tracks(sceneID:)) ?? []; chordEvents = try id.map($0.chordEvents(sceneID:)) ?? [] } }
+    func selectScene(_ id: Int64?) { selectedSceneID = id; chordDrafts = [:]; perform("Szene konnte nicht geladen werden") { tracks = try id.map($0.tracks(sceneID:)) ?? []; chordEvents = try id.map($0.chordEvents(sceneID:)) ?? [] } }
+    var displayedChordEvents: [ChordEvent] { chordEvents.map { chordDrafts[$0.id] ?? $0 } }
+    func chordDraft(id: Int64) -> ChordEvent? { chordDrafts[id] }
+    func stageChordDraft(_ draft: ChordEvent) {
+        guard let saved = chordEvents.first(where: { $0.id == draft.id }) else { return }
+        var marked = draft
+        marked.isDraft = true
+        marked.previousChord = saved.chord
+        var comparable = draft
+        comparable.isDraft = false
+        comparable.previousChord = nil
+        if comparable == saved { chordDrafts.removeValue(forKey: draft.id) }
+        else { chordDrafts[draft.id] = marked }
+    }
+    @discardableResult func saveChordDraft(id: Int64) -> Bool {
+        guard let sceneID = selectedSceneID, var draft = chordDrafts[id] else { return false }
+        draft.isDraft = false
+        draft.previousChord = nil
+        var succeeded = false
+        perform("Akkordentwurf konnte nicht gespeichert werden") {
+            try $0.updateChord(draft)
+            chordEvents = try $0.chordEvents(sceneID: sceneID)
+            chordDrafts.removeValue(forKey: id)
+            succeeded = true
+        }
+        return succeeded
+    }
+    func discardChordDraft(id: Int64) { chordDrafts.removeValue(forKey: id) }
     func addScene() { guard let scoreID = selectedScoreID else { return }; perform("Szene konnte nicht angelegt werden") { let id = try $0.createScene(scoreID: scoreID); scenes = try $0.scenes(scoreID: scoreID); selectScene(id) } }
     func updateScoreTitle(_ title: String) { guard let id = selectedScoreID, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }; perform("Partiturtitel konnte nicht gespeichert werden") { try $0.updateScore(id: id, title: title); if let index = scores.firstIndex(where: { $0.id == id }) { scores[index].title = title } } }
     func updateScene(_ scene: ScoreScene) { perform("Szene konnte nicht gespeichert werden") { try $0.updateScene(scene); if let index = scenes.firstIndex(where: { $0.id == scene.id }) { scenes[index] = scene } } }
@@ -502,7 +530,7 @@ final class ScoreDatabase {
     }
     func deleteSelectedScore() { guard let id = selectedScoreID else { return }; perform("Partitur konnte nicht gelöscht werden") { try $0.deleteScore(id: id); try reloadScores(selecting: nil) } }
     private func reloadScores(selecting id: Int64?) throws { guard let database else { return }; scores = try database.scores(); selectedScoreID = id ?? scores.first?.id; try loadSelectedScore() }
-    private func loadSelectedScore() throws { guard let database, let selectedScoreID else { scenes = []; tracks = []; chordEvents = []; selectedSceneID = nil; return }; scenes = try database.scenes(scoreID: selectedScoreID); selectedSceneID = scenes.first?.id; tracks = try selectedSceneID.map(database.tracks(sceneID:)) ?? []; chordEvents = try selectedSceneID.map(database.chordEvents(sceneID:)) ?? [] }
+    private func loadSelectedScore() throws { chordDrafts = [:]; guard let database, let selectedScoreID else { scenes = []; tracks = []; chordEvents = []; selectedSceneID = nil; return }; scenes = try database.scenes(scoreID: selectedScoreID); selectedSceneID = scenes.first?.id; tracks = try selectedSceneID.map(database.tracks(sceneID:)) ?? []; chordEvents = try selectedSceneID.map(database.chordEvents(sceneID:)) ?? [] }
     private func perform(_ context: String, _ work: (ScoreDatabase) throws -> Void) { guard let database else { return }; do { try work(database); errorMessage = nil } catch { report(error, context: context) } }
     private func report(_ error: Error, context: String) { let message = "\(context): \(error.localizedDescription)"; Self.logger.error("\(message, privacy: .public)"); errorMessage = message }
 }
@@ -512,16 +540,26 @@ enum ABCScoreBuilder {
         let chordBeats = chords.map { $0.startBeat + $0.beats }.max() ?? 0
         let rawSceneBeats = max(chordBeats, tracks.map { ABCTrackTiming.duration(of: $0.abc) }.max() ?? 0)
         let sceneBeats = ((rawSceneBeats + 3) / 4) * 4
-        let voices = tracks.enumerated().map { index, track in
+        let ghostVoiceID = "draftPrevious"
+        let hasDraftGhosts = chords.contains { $0.previousChord != nil }
+        var voiceBlocks = tracks.enumerated().map { index, track in
             let content: String
-            if !chords.isEmpty && track.name == "Akkorde" { content = chordABC(chords, totalBeats: sceneBeats) }
+            if !chords.isEmpty && isChordTrackName(track.name) { content = chordABC(chords, totalBeats: sceneBeats) }
             else if !chords.isEmpty && track.name == "Bass" { content = bassABC(chords, totalBeats: sceneBeats) }
             else { content = ABCTrackTiming.fitted(track.abc, to: sceneBeats, mode: track.endMode) }
             let clef = track.position == 0 || track.name.compare("Bass", options: .caseInsensitive) == .orderedSame ? "bass" : "treble"
             // The visually identical Cyrillic е makes the layout placeholder unambiguous in the renderer.
             return "V:v\(index + 1) name=\"\(escaped(track.name))\" subname=\"Akkordе\" clef=\(clef)\n\(content)"
-        }.joined(separator: "\n")
-        return "X:1\nT:\(score.title) – \(scene.title)\nM:4/4\nL:1/4\nQ:1/4=\(scene.tempo)\nK:\(MusicTheory.abcKey(tonic: scene.tonic, kind: scene.scale))\n%%score { \(tracks.indices.map { "v\($0 + 1)" }.joined(separator: " ")) }\n\(voices)"
+        }
+        let chordTrackIndex = tracks.firstIndex { isChordTrackName($0.name) }
+        if hasDraftGhosts, chordTrackIndex != nil {
+            voiceBlocks.append("V:\(ghostVoiceID) name=\"Vorheriger Stand\" clef=treble\n%%voicecolor lightgray\n\(previousChordABC(chords, totalBeats: sceneBeats))")
+        }
+        let layout = tracks.indices.map { index in
+            if hasDraftGhosts, index == chordTrackIndex { return "( v\(index + 1) \(ghostVoiceID) )" }
+            return "v\(index + 1)"
+        }.joined(separator: " ")
+        return "X:1\nT:\(score.title) – \(scene.title)\nM:4/4\nL:1/4\nQ:1/4=\(scene.tempo)\nK:\(MusicTheory.abcKey(tonic: scene.tonic, kind: scene.scale))\n%%score { \(layout) }\n\(voiceBlocks.joined(separator: "\n"))"
     }
 
     static func sceneBeats(tracks: [ScoreTrack], chords: [ChordEvent]) -> Int {
@@ -529,13 +567,20 @@ enum ABCScoreBuilder {
     }
     private static func chordABC(_ events: [ChordEvent], totalBeats: Int) -> String {
         timedABC(events, totalBeats: totalBeats) { event, duration, isFirstChunk, continues in
-            let symbol = isFirstChunk ? "\"\(event.chord.symbol)\"" : ""
+            let label = event.chord.symbol + (event.isDraft ? " · Entwurf" : "")
+            let symbol = isFirstChunk ? "\"\(label)\"" : ""
             return "\(symbol)[\(event.pitches.map(MusicTheory.abcNote).joined())]\(duration)\(continues ? "-" : "")"
         }
     }
     private static func bassABC(_ events: [ChordEvent], totalBeats: Int) -> String {
         timedABC(events, totalBeats: totalBeats) { event, duration, _, continues in
             "\(MusicTheory.abcNote(event.bassPitch ?? 36 + event.root))\(duration)\(continues ? "-" : "")"
+        }
+    }
+    private static func previousChordABC(_ events: [ChordEvent], totalBeats: Int) -> String {
+        timedABC(events.filter { $0.previousChord != nil }, totalBeats: totalBeats) { event, duration, _, continues in
+            guard let previous = event.previousChord else { return "z\(duration)" }
+            return "[\(previous.pitches.map(MusicTheory.abcNote).joined())]\(duration)\(continues ? "-" : "")"
         }
     }
     private static func timedABC(_ events: [ChordEvent], totalBeats: Int, render: (ChordEvent, Int, Bool, Bool) -> String) -> String {
@@ -565,6 +610,9 @@ enum ABCScoreBuilder {
         return parts.joined(separator: " ")
     }
     private static func escaped(_ value: String) -> String { value.replacingOccurrences(of: "\"", with: "'") }
+    private static func isChordTrackName(_ name: String) -> Bool {
+        name.localizedCaseInsensitiveContains("akkord") || name.localizedCaseInsensitiveContains("chord")
+    }
 
     static func singleChord(_ chord: TheoryChord, scene: ScoreScene) -> String {
         let clef = MusicTheory.preferredClef(for: chord.pitches) == .bass ? "bass" : "treble"

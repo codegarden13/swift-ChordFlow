@@ -45,6 +45,7 @@ struct TheoryWorkspaceView: View {
     @State private var insertionBeat = 0
     @State private var occupiedChordAction = OccupiedChordAction.replace
     @State private var splitNewChordFirst = false
+    @State private var editedEventID: Int64?
     @State private var sceneActionMessage: String?
     @State private var snapsToScale = true
     @State private var automaticallyPreviewsChord = true
@@ -93,10 +94,16 @@ struct TheoryWorkspaceView: View {
                 if library.chordEvents.isEmpty {
                     ContentUnavailableView("Noch keine Akkorde", systemImage: "rectangle.stack.badge.plus", description: Text("Entwirf einen Akkord im Akkordlabor und füge ihn hier ein."))
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 240), spacing: 12)], alignment: .leading, spacing: 12) {
-                            ForEach(library.chordEvents) { event in chordCard(event) }
-                        }.padding(.vertical, 8)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 240), spacing: 12)], alignment: .leading, spacing: 12) {
+                                ForEach(library.displayedChordEvents) { event in chordCard(event).id(event.id) }
+                            }.padding(.vertical, 8)
+                        }
+                        .onChange(of: selectedArrangementChord?.id) { _, selectedID in
+                            guard let selectedID else { return }
+                            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(selectedID, anchor: .center) }
+                        }
                     }
                 }
                 Spacer()
@@ -107,9 +114,19 @@ struct TheoryWorkspaceView: View {
     private func chordCard(_ event: ChordEvent) -> some View {
         let voicing = MusicTheory.analyzeVoicing(event.chord, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))
         let degree = MusicTheory.romanDegree(root: event.root, tonic: scene.tonic, kind: scene.scale)
+        let isActive = selectedArrangementChord?.id == event.id
+        let terminalGreen = Color(red: 0.24, green: 1.0, blue: 0.42)
         return VStack(alignment: .leading, spacing: 7) {
             HStack {
                 Text(event.chord.symbol).font(.title2.bold())
+                if event.isDraft {
+                    Text("Entwurf")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.orange.opacity(0.12), in: Capsule())
+                }
                 Spacer()
                 Menu("Aktionen", systemImage: "ellipsis.circle") {
                     Button("Akkord löschen", systemImage: "trash", role: .destructive) { library.deleteChord(event.id) }
@@ -145,12 +162,15 @@ struct TheoryWorkspaceView: View {
             .frame(height: 43, alignment: .topLeading)
             Spacer(minLength: 0)
             Stepper("\(event.beats) Zählzeiten", value: Binding(get: { event.beats }, set: { value in
-                var changed = event; changed.beats = value; library.updateChord(changed)
+                var changed = event; changed.beats = value; library.stageChordDraft(changed)
             }), in: 1...32)
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 205, maxHeight: 205, alignment: .topLeading)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        .background(isActive ? terminalGreen.opacity(0.10) : Color(nsColor: .quaternaryLabelColor).opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(isActive ? terminalGreen.opacity(0.95) : .clear, lineWidth: 2))
+        .shadow(color: isActive ? terminalGreen.opacity(0.62) : .clear, radius: 14)
+        .animation(.easeOut(duration: 0.16), value: isActive)
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture {
             selectedArrangementChord = event
@@ -213,6 +233,7 @@ struct TheoryWorkspaceView: View {
                     Text("Akkordlabor").font(.title2.bold())
                     Spacer()
                 }
+                chordNavigation
                 HStack {
                     Picker("Grundton", selection: Binding(get: { root }, set: { root = $0; resetVoicing() })) { ForEach(0..<12, id: \.self) { Text(MusicTheory.noteName($0, prefersFlats: MusicTheory.prefersFlats(tonic: scene.tonic))).tag($0) } }.frame(maxWidth: 180)
                     Picker("Akkord", selection: Binding(get: { quality }, set: { quality = $0; resetVoicing() })) { ForEach(ChordQuality.allCases) { Text($0.title).tag($0) } }.frame(maxWidth: 240)
@@ -254,7 +275,7 @@ struct TheoryWorkspaceView: View {
         }
         .onChange(of: chordDestination) { _, destination in
             guard case let .replace(id) = destination, let event = library.chordEvents.first(where: { $0.id == id }) else { return }
-            root = event.root; quality = event.quality; pitches = event.pitches
+            loadForEditing(event)
         }
         .onChange(of: scoreController.selectedNotes) { _, selections in
             if let selectedMeasure = selections.first?.measure {
@@ -268,13 +289,156 @@ struct TheoryWorkspaceView: View {
             occupiedChordAction = .replace
         }
         .onChange(of: insertionBeat) { _, _ in occupiedChordAction = .replace }
-        .onChange(of: pitches) { _, _ in if automaticallyPreviewsChord { previewChord() } }
+        .onChange(of: pitches) { _, _ in
+            stageCurrentChordDraft()
+            if automaticallyPreviewsChord { previewChord() }
+        }
         .onChange(of: automaticallyPreviewsChord) { _, enabled in if enabled { previewChord() } else { MIDIService.shared.stopChordPreview() } }
         .onAppear {
             insertionMeasure = min(max(0, selectedScoreMeasure), max(0, sceneMeasureCount - 1))
-            if automaticallyPreviewsChord { previewChord() }
+            if let editedEvent {
+                loadForEditing(editedEvent)
+            } else if let event = event(atMeasure: selectedScoreMeasure) ?? library.chordEvents.first {
+                loadForEditing(event)
+            } else if automaticallyPreviewsChord { previewChord() }
+        }
+        .onChange(of: scene.id) { _, _ in
+            editedEventID = nil
         }
         .onDisappear { MIDIService.shared.stopChordPreview() }
+    }
+
+    private var chordNavigation: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Button("Vorheriger Takt", systemImage: "chevron.left") { navigateMeasure(by: -1) }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled(!canNavigateMeasure(by: -1))
+                    .help("Einen Takt zurück (←)")
+                Button("Vorheriger Akkord", systemImage: "backward.end") { navigateChord(by: -1) }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.leftArrow, modifiers: [.option])
+                    .disabled(!canNavigateChord(by: -1))
+                    .help("Zum vorherigen Akkord (⌥←)")
+                if let event = editedEvent {
+                    Text("Takt \(selectedScoreMeasure + 1) · Akkord \(event.position + 1) von \(library.chordEvents.count) · \(event.chord.symbol)")
+                        .font(.headline)
+                } else {
+                    Text("Neuer Akkord").font(.headline)
+                }
+                Button("Nächster Akkord", systemImage: "forward.end") { navigateChord(by: 1) }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.rightArrow, modifiers: [.option])
+                    .disabled(!canNavigateChord(by: 1))
+                    .help("Zum nächsten Akkord (⌥→)")
+                Button("Nächster Takt", systemImage: "chevron.right") { navigateMeasure(by: 1) }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(!canNavigateMeasure(by: 1))
+                    .help("Einen Takt vor (→)")
+                Spacer()
+                if editedEvent != nil {
+                    Button("Als neuen Akkord verwenden", systemImage: "plus") {
+                        editedEventID = nil
+                        sceneActionMessage = "\(chord.symbol) kann jetzt an einer neuen Position eingesetzt werden."
+                    }
+                }
+            }
+            if hasUnsavedChordChanges, let event = editedEvent {
+                HStack(spacing: 10) {
+                    Label("Ungespeicherte Änderung an \(event.chord.symbol)", systemImage: "pencil.circle.fill")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Button("Änderung speichern", systemImage: "checkmark") { saveEditedChord() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Verwerfen", systemImage: "arrow.uturn.backward") { discardEditedChord() }
+                    Text("Der Entwurf bleibt beim Navigieren erhalten und wird in Karte und Partitur markiert.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var editedEvent: ChordEvent? {
+        guard let editedEventID else { return nil }
+        return library.displayedChordEvents.first { $0.id == editedEventID }
+    }
+    private var hasUnsavedChordChanges: Bool {
+        guard let editedEventID else { return false }
+        return library.chordDraft(id: editedEventID) != nil
+    }
+    private func event(atMeasure measure: Int) -> ChordEvent? {
+        let beat = max(0, measure) * 4
+        return library.displayedChordEvents.first { $0.startBeat <= beat && $0.startBeat + $0.beats > beat }
+    }
+    private func canNavigateChord(by offset: Int) -> Bool {
+        guard let editedEvent, let index = library.chordEvents.firstIndex(where: { $0.id == editedEvent.id }) else { return false }
+        return library.chordEvents.indices.contains(index + offset)
+    }
+    private func canNavigateMeasure(by offset: Int) -> Bool {
+        let target = selectedScoreMeasure + offset
+        return (0..<sceneMeasureCount).contains(target)
+    }
+    private func navigateMeasure(by offset: Int) {
+        stageCurrentChordDraft()
+        let target = selectedScoreMeasure + offset
+        guard (0..<sceneMeasureCount).contains(target) else { return }
+        selectedScoreMeasure = target
+        insertionMeasure = target
+        insertionBeat = 0
+        if let targetEvent = event(atMeasure: target) {
+            if targetEvent.id == editedEventID {
+                scoreController.highlightChord(measure: target, pitches: targetEvent.pitches)
+                MIDIService.shared.previewChord(targetEvent.pitches)
+            } else {
+                loadForEditing(targetEvent)
+            }
+        } else {
+            scoreController.highlightChord(measure: target, pitches: [])
+            MIDIService.shared.stopChordPreview()
+        }
+    }
+    private func navigateChord(by offset: Int) {
+        stageCurrentChordDraft()
+        guard let editedEvent,
+              let index = library.chordEvents.firstIndex(where: { $0.id == editedEvent.id }),
+              library.chordEvents.indices.contains(index + offset) else { return }
+        loadForEditing(library.chordEvents[index + offset])
+    }
+    private func loadForEditing(_ event: ChordEvent) {
+        editedEventID = event.id
+        let displayedEvent = library.chordDraft(id: event.id) ?? event
+        root = displayedEvent.root
+        quality = displayedEvent.quality
+        pitches = displayedEvent.pitches
+        insertionMeasure = displayedEvent.startBeat / 4
+        insertionBeat = displayedEvent.startBeat % 4
+        selectedScoreMeasure = insertionMeasure
+        scoreController.highlightChord(measure: insertionMeasure, pitches: displayedEvent.pitches)
+        previewChord()
+        sceneActionMessage = nil
+    }
+    private func saveEditedChord() {
+        stageCurrentChordDraft()
+        guard let editedEvent, library.saveChordDraft(id: editedEvent.id) else { return }
+        sceneActionMessage = "\(chord.symbol) in Takt \(measureNumber(for: editedEvent)) wurde gespeichert."
+    }
+    private func discardEditedChord() {
+        guard let editedEventID, let savedEvent = library.chordEvents.first(where: { $0.id == editedEventID }) else { return }
+        library.discardChordDraft(id: editedEventID)
+        loadForEditing(savedEvent)
+        sceneActionMessage = "Ungespeicherte Änderungen wurden verworfen."
+    }
+    private func stageCurrentChordDraft() {
+        guard let editedEventID, var event = library.chordEvents.first(where: { $0.id == editedEventID }) else { return }
+        event.root = chord.root
+        event.quality = chord.quality
+        event.pitches = chord.pitches
+        library.stageChordDraft(event)
     }
 
     private var sceneDestinationPanel: some View {
@@ -516,6 +680,7 @@ struct TheoryWorkspaceView: View {
         return "\(chord.symbol) · \(chord.quality.title)\nTöne: \(tones)\nIntervalle: \(chord.intervalLabels.joined(separator: " · "))\nStufe: \(degree)\nKlicken zum Anhören und Anzeigen"
     }
     private func previewArrangementChord(_ event: ChordEvent) {
+        selectedScoreMeasure = measureNumber(for: event) - 1
         MIDIService.shared.previewChord(event.pitches)
         scoreController.highlightChord(measure: measureNumber(for: event) - 1, pitches: event.pitches)
     }
@@ -532,9 +697,16 @@ struct TheoryWorkspaceView: View {
 
 struct ArrangementChordDetail: View {
     let event: ChordEvent
+    let initialDraft: ChordEvent
     let scene: ScoreScene
     let measure: Int
-    let update: (ChordEvent) -> Void
+    let stage: (ChordEvent) -> Void
+    let save: (ChordEvent) -> Void
+    let discard: () -> Void
+    let canNavigate: (Int) -> Bool
+    let navigate: (Int) -> Void
+    let canNavigateMeasure: (Int) -> Bool
+    let navigateMeasure: (Int) -> Void
     let close: () -> Void
     @State private var draft: ChordEvent
     @State private var snapsToScale = true
@@ -543,13 +715,20 @@ struct ArrangementChordDetail: View {
     @GestureState private var dragOffset = CGSize.zero
     @StateObject private var notationController = ScoreController()
 
-    init(event: ChordEvent, scene: ScoreScene, measure: Int, update: @escaping (ChordEvent) -> Void, close: @escaping () -> Void) {
+    init(event: ChordEvent, initialDraft: ChordEvent, scene: ScoreScene, measure: Int, stage: @escaping (ChordEvent) -> Void, save: @escaping (ChordEvent) -> Void, discard: @escaping () -> Void, canNavigate: @escaping (Int) -> Bool, navigate: @escaping (Int) -> Void, canNavigateMeasure: @escaping (Int) -> Bool, navigateMeasure: @escaping (Int) -> Void, close: @escaping () -> Void) {
         self.event = event
+        self.initialDraft = initialDraft
         self.scene = scene
         self.measure = measure
-        self.update = update
+        self.stage = stage
+        self.save = save
+        self.discard = discard
+        self.canNavigate = canNavigate
+        self.navigate = navigate
+        self.canNavigateMeasure = canNavigateMeasure
+        self.navigateMeasure = navigateMeasure
         self.close = close
-        _draft = State(initialValue: event)
+        _draft = State(initialValue: initialDraft)
     }
 
     var body: some View {
@@ -563,6 +742,16 @@ struct ArrangementChordDetail: View {
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
                 .help("Schließen (Esc)")
+                Button("Vorheriger Takt", systemImage: "chevron.left") { navigateMeasure(-1) }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled(!canNavigateMeasure(-1))
+                    .help("Einen Takt zurück (←)")
+                Button("Vorheriger Akkord", systemImage: "backward.end") { navigate(-1) }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.leftArrow, modifiers: [.option])
+                    .disabled(!canNavigate(-1))
+                    .help("Zum vorherigen Akkord (⌥←)")
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Akkord in Takt \(measure)").font(.title2.bold())
                     Text("Position \(event.position + 1) · \(event.beats) Zählzeiten").font(.callout).foregroundStyle(.secondary)
@@ -571,6 +760,33 @@ struct ArrangementChordDetail: View {
                 .contentShape(Rectangle())
                 .gesture(moveGesture)
                 .help("Zum Verschieben ziehen")
+                Button("Nächster Akkord", systemImage: "forward.end") { navigate(1) }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.rightArrow, modifiers: [.option])
+                    .disabled(!canNavigate(1))
+                    .help("Zum nächsten Akkord (⌥→)")
+                Button("Nächster Takt", systemImage: "chevron.right") { navigateMeasure(1) }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(!canNavigateMeasure(1))
+                    .help("Einen Takt vor (→)")
+            }
+            if hasUnsavedChanges {
+                HStack(spacing: 10) {
+                    Label("Ungespeicherte Änderung", systemImage: "pencil.circle.fill")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Button("Änderung speichern", systemImage: "checkmark") { save(draft) }
+                        .buttonStyle(.borderedProminent)
+                    Button("Verwerfen", systemImage: "arrow.uturn.backward") {
+                        draft = event
+                        discard()
+                        MIDIService.shared.previewChord(event.pitches)
+                    }
+                    Text("Der Entwurf bleibt beim Navigieren erhalten und ist in Karte und Partitur markiert.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             editControls
             HStack(alignment: .top, spacing: 14) {
@@ -608,7 +824,7 @@ struct ArrangementChordDetail: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
-        .frame(width: 780, height: 625)
+        .frame(width: 780, height: 665)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(.separator.opacity(0.55)))
         .shadow(color: .black.opacity(0.22), radius: 22, y: 10)
@@ -622,7 +838,7 @@ struct ArrangementChordDetail: View {
                 notationController.setSelectedNoteColor(toneRoleCSSColor(analysis.role))
             }
         }
-        .onChange(of: event) { _, changed in draft = changed }
+        .onChange(of: initialDraft) { _, changed in draft = changed }
         .onDisappear {
             notationController.transposeHandler = nil
             notationController.selectionHandler = nil
@@ -667,7 +883,12 @@ struct ArrangementChordDetail: View {
         .controlSize(.small)
     }
 
-    private func commit() { update(draft) }
+    private var hasUnsavedChanges: Bool { draft != event }
+
+    private func commit() {
+        stage(draft)
+        MIDIService.shared.previewChord(draft.pitches)
+    }
 
     private func transposeSelectedPitch(_ selection: ScoreNoteSelection, by semitones: Int) {
         guard let index = draft.pitches.firstIndex(of: selection.midi) else {

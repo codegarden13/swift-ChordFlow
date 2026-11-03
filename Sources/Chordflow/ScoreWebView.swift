@@ -183,25 +183,15 @@ final class ScoreController: ObservableObject {
             arguments: ["measure": revealedMeasure],
             in: nil,
             in: .page
-        ) { [weak self, weak webView] result in
+        ) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self, let webView else { return }
+                guard let self else { return }
                 switch result {
                 case .success(let value):
-                    guard let position = value as? [String: Any],
-                          let top = position["top"] as? NSNumber,
-                          let height = position["height"] as? NSNumber else {
+                    guard value is [String: Any] else {
                         self.report("Takt \(revealedMeasure + 1) konnte in der Partitur nicht gefunden werden.")
                         return
                     }
-                    let margin: CGFloat = 80
-                    let rect = NSRect(
-                        x: 0,
-                        y: max(0, CGFloat(truncating: top) - margin),
-                        width: max(1, webView.bounds.width),
-                        height: max(1, CGFloat(truncating: height) + margin * 2)
-                    )
-                    webView.scrollToVisible(rect)
                     self.errorMessage = nil
                 case .failure(let error):
                     self.report("Taktposition konnte nicht angezeigt werden: \(error.localizedDescription)")
@@ -213,13 +203,13 @@ final class ScoreController: ObservableObject {
     func clearHighlight() {
         highlightedChord = nil
         guard let webView, isReady else { return }
-        webView.callAsyncJavaScript("return CartoGraphABC.clearSelection()", arguments: [:], in: nil, in: .page) { _ in }
+        webView.callAsyncJavaScript("CartoGraphABC.clearSelection(); clearActiveMeasureLabel(); return true", arguments: [:], in: nil, in: .page) { _ in }
     }
 
     private func applyHighlight() {
         guard let webView, isReady, let highlightedChord else { return }
         webView.callAsyncJavaScript(
-            "return CartoGraphABC.highlightChord(measure, pitches)",
+            "const highlighted=CartoGraphABC.highlightChord(measure, pitches); showActiveMeasureLabel(measure); return highlighted",
             arguments: ["measure": highlightedChord.measure, "pitches": highlightedChord.pitches],
             in: nil,
             in: .page
@@ -312,8 +302,27 @@ struct ScoreWebView: NSViewRepresentable {
     private static func html(_ source: String) -> String {
         let bridge = """
         <script>function reportHeight(){requestAnimationFrame(()=>webkit.messageHandlers.abcNotationHeight.postMessage(Math.ceil(document.body.scrollHeight)))}
+        function clearActiveMeasureLabel(){document.getElementById('chordflow-active-measure')?.remove()}
+        function showActiveMeasureLabel(measure){
+          clearActiveMeasureLabel();
+          const elements=Array.from(document.querySelectorAll('.cartograph-abc-selected-measure'));
+          if(!elements.length)return null;
+          const rect=elements.reduce((result,element)=>{
+            const current=element.getBoundingClientRect();
+            return {top:Math.min(result.top,current.top),left:Math.min(result.left,current.left)};
+          },{top:Number.POSITIVE_INFINITY,left:Number.POSITIVE_INFINITY});
+          const label=document.createElement('div');
+          label.id='chordflow-active-measure';
+          label.textContent=`Takt ${Number(measure)+1}`;
+          Object.assign(label.style,{position:'absolute',zIndex:'20',left:`${Math.max(8,rect.left+window.scrollX)}px`,top:`${Math.max(4,rect.top+window.scrollY-27)}px`,padding:'3px 8px',borderRadius:'7px',background:'rgba(10,132,255,.92)',color:'white',font:'600 13px -apple-system,BlinkMacSystemFont,sans-serif',boxShadow:'0 2px 6px rgba(0,0,0,.18)',pointerEvents:'none'});
+          document.body.appendChild(label);
+          const target=elements.reduce((best,element)=>element.getBoundingClientRect().top<best.getBoundingClientRect().top?element:best,elements[0]);
+          requestAnimationFrame(()=>target.scrollIntoView({block:'center',inline:'nearest',behavior:'smooth'}));
+          return label;
+        }
         function revealScoreMeasure(measure){
           CartoGraphABC.highlightChord(Number(measure),[]);
+          showActiveMeasureLabel(measure);
           const elements=Array.from(document.querySelectorAll('.cartograph-abc-selected-measure'));
           if(!elements.length)return null;
           const rect=elements.reduce((result,element)=>{
