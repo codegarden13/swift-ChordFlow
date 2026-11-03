@@ -162,6 +162,26 @@ final class ChordflowTests: XCTestCase {
         XCTAssertThrowsError(try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 0, quality: .major), atBeat: 42))
     }
 
+    func testOccupiedMeasureCanBeSplitWithoutChangingFollowingTimeline() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try ScoreDatabase(url: url)
+        let scoreID = try database.createScore()
+        let scene = try XCTUnwrap(database.scenes(scoreID: scoreID).first)
+        let eventID = try database.addChord(sceneID: scene.id, chord: TheoryChord(root: 0, quality: .major))
+        var event = try XCTUnwrap(database.chordEvents(sceneID: scene.id).first)
+        event.beats = 16
+        try database.updateChord(event)
+
+        try database.splitChordMeasure(eventID: eventID, measureStartBeat: 8, chord: TheoryChord(root: 2, quality: .minor), newChordFirst: false)
+        let events = try database.chordEvents(sceneID: scene.id)
+
+        XCTAssertEqual(events.map(\.chord.symbol), ["C", "C", "Dm", "C"])
+        XCTAssertEqual(events.map(\.startBeat), [0, 8, 10, 12])
+        XCTAssertEqual(events.map(\.beats), [8, 2, 2, 4])
+        XCTAssertEqual(events.map(\.position), [0, 1, 2, 3])
+    }
+
     func testSceneAndTrackScaleChoicesPersist() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite3")
         defer { try? FileManager.default.removeItem(at: url) }

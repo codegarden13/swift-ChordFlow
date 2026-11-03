@@ -299,6 +299,48 @@ final class ScoreDatabase {
         guard overlapCount == 0 else { throw ScoreLibraryError.invalidInput("Die geänderte Akkorddauer würde einen anderen Akkord überlappen.") }
         try run("UPDATE chord_events SET position = ?, root = ?, quality = ?, pitches = ?, beats = ?, start_beat = ?, bass_pitch = ? WHERE id = ?", binds: [.integer(Int64(event.position)), .integer(Int64(event.root)), .text(event.quality.rawValue), .text(event.pitches.map(String.init).joined(separator: ",")), .integer(Int64(event.beats)), .integer(Int64(event.startBeat)), event.bassPitch.map { .integer(Int64($0)) } ?? .null, .integer(event.id)])
     }
+    func splitChordMeasure(eventID: Int64, measureStartBeat: Int, chord: TheoryChord, newChordFirst: Bool) throws {
+        try transaction {
+            guard let sceneID = try query("SELECT scene_id FROM chord_events WHERE id = ?", binds: [.integer(eventID)], map: { sqlite3_column_int64($0, 0) }).first,
+                  let event = try chordEvents(sceneID: sceneID).first(where: { $0.id == eventID }) else {
+                throw ScoreLibraryError.invalidInput("Der zu teilende Akkord wurde nicht gefunden.")
+            }
+            guard measureStartBeat >= event.startBeat, measureStartBeat + 4 <= event.startBeat + event.beats else {
+                throw ScoreLibraryError.invalidInput("Takt \(measureStartBeat / 4 + 1) wird vom vorhandenen Akkord nicht vollständig ausgefüllt und kann deshalb nicht halbiert werden.")
+            }
+
+            struct Piece {
+                let chord: TheoryChord
+                let startBeat: Int
+                let beats: Int
+                let bassPitch: Int?
+            }
+            let existingChord = event.chord
+            var pieces: [Piece] = []
+            let prefixBeats = measureStartBeat - event.startBeat
+            if prefixBeats > 0 { pieces.append(Piece(chord: existingChord, startBeat: event.startBeat, beats: prefixBeats, bassPitch: event.bassPitch)) }
+            let firstChord = newChordFirst ? chord : existingChord
+            let secondChord = newChordFirst ? existingChord : chord
+            pieces.append(Piece(chord: firstChord, startBeat: measureStartBeat, beats: 2, bassPitch: newChordFirst ? nil : event.bassPitch))
+            pieces.append(Piece(chord: secondChord, startBeat: measureStartBeat + 2, beats: 2, bassPitch: newChordFirst ? event.bassPitch : nil))
+            let suffixStart = measureStartBeat + 4
+            let suffixBeats = event.startBeat + event.beats - suffixStart
+            if suffixBeats > 0 { pieces.append(Piece(chord: existingChord, startBeat: suffixStart, beats: suffixBeats, bassPitch: event.bassPitch)) }
+
+            try run("DELETE FROM chord_events WHERE id = ?", binds: [.integer(event.id)])
+            let addedPositions = pieces.count - 1
+            if addedPositions > 0 {
+                try run("UPDATE chord_events SET position = position + ? WHERE scene_id = ? AND position > ?", binds: [.integer(Int64(addedPositions)), .integer(event.sceneID), .integer(Int64(event.position))])
+            }
+            for (offset, piece) in pieces.enumerated() {
+                try run("INSERT INTO chord_events(scene_id, position, root, quality, pitches, beats, start_beat, bass_pitch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", binds: [
+                    .integer(event.sceneID), .integer(Int64(event.position + offset)), .integer(Int64(piece.chord.root)),
+                    .text(piece.chord.quality.rawValue), .text(piece.chord.pitches.map(String.init).joined(separator: ",")),
+                    .integer(Int64(piece.beats)), .integer(Int64(piece.startBeat)), piece.bassPitch.map { .integer(Int64($0)) } ?? .null
+                ])
+            }
+        }
+    }
     func deleteChord(id: Int64) throws {
         try transaction {
             guard let sceneID = try query("SELECT scene_id FROM chord_events WHERE id = ?", binds: [.integer(id)], map: { sqlite3_column_int64($0, 0) }).first else { return }
@@ -417,15 +459,35 @@ final class ScoreDatabase {
     func updateTrack(_ track: ScoreTrack) { guard let scoreID = selectedScoreID else { return }; perform("Spur konnte nicht gespeichert werden") { try $0.updateTrack(track, scoreID: scoreID); if let index = tracks.firstIndex(where: { $0.id == track.id }) { tracks[index] = track } } }
     func addChord(_ chord: TheoryChord) { guard let sceneID = selectedSceneID else { return }; perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord); chordEvents = try $0.chordEvents(sceneID: sceneID) } }
     @discardableResult func addChord(_ chord: TheoryChord, atBeat startBeat: Int) -> Bool { guard let sceneID = selectedSceneID else { return false }; var succeeded = false; perform("Akkord konnte nicht eingesetzt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord, atBeat: startBeat); chordEvents = try $0.chordEvents(sceneID: sceneID); succeeded = true }; return succeeded }
-    func insertChord(_ chord: TheoryChord, before eventID: Int64) {
-        guard let sceneID = selectedSceneID, let position = chordEvents.first(where: { $0.id == eventID })?.position else { return }
-        perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord, at: position); chordEvents = try $0.chordEvents(sceneID: sceneID) }
+    @discardableResult func insertChord(_ chord: TheoryChord, before eventID: Int64) -> Bool {
+        guard let sceneID = selectedSceneID, let position = chordEvents.first(where: { $0.id == eventID })?.position else { return false }
+        var succeeded = false
+        perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord, at: position); chordEvents = try $0.chordEvents(sceneID: sceneID); succeeded = true }
+        return succeeded
+    }
+    @discardableResult func insertChord(_ chord: TheoryChord, after eventID: Int64) -> Bool {
+        guard let sceneID = selectedSceneID, let position = chordEvents.first(where: { $0.id == eventID })?.position else { return false }
+        var succeeded = false
+        perform("Akkord konnte nicht eingefügt werden") { _ = try $0.addChord(sceneID: sceneID, chord: chord, at: position + 1); chordEvents = try $0.chordEvents(sceneID: sceneID); succeeded = true }
+        return succeeded
     }
     func updateChord(_ event: ChordEvent) { perform("Akkord konnte nicht gespeichert werden") { try $0.updateChord(event); if let index = chordEvents.firstIndex(where: { $0.id == event.id }) { chordEvents[index] = event } } }
-    func replaceChord(id: Int64, with chord: TheoryChord) {
-        guard var event = chordEvents.first(where: { $0.id == id }) else { return }
+    @discardableResult func replaceChord(id: Int64, with chord: TheoryChord) -> Bool {
+        guard let sceneID = selectedSceneID, var event = chordEvents.first(where: { $0.id == id }) else { return false }
         event.root = chord.root; event.quality = chord.quality; event.pitches = chord.pitches
-        updateChord(event)
+        var succeeded = false
+        perform("Akkord konnte nicht ersetzt werden") { try $0.updateChord(event); chordEvents = try $0.chordEvents(sceneID: sceneID); succeeded = true }
+        return succeeded
+    }
+    @discardableResult func splitChordMeasure(eventID: Int64, measureStartBeat: Int, with chord: TheoryChord, newChordFirst: Bool) -> Bool {
+        guard let sceneID = selectedSceneID else { return false }
+        var succeeded = false
+        perform("Takt konnte nicht geteilt werden") {
+            try $0.splitChordMeasure(eventID: eventID, measureStartBeat: measureStartBeat, chord: chord, newChordFirst: newChordFirst)
+            chordEvents = try $0.chordEvents(sceneID: sceneID)
+            succeeded = true
+        }
+        return succeeded
     }
     func transposeChordProgression(from oldTonic: Int, to newTonic: Int) {
         guard let sceneID = selectedSceneID else { return }

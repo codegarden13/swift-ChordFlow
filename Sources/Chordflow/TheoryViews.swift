@@ -16,6 +16,14 @@ private enum ChordLabDestination: Hashable {
     case replace(Int64)
 }
 
+private enum OccupiedChordAction: String, CaseIterable, Identifiable {
+    case replace = "Ersetzen"
+    case before = "Davor"
+    case after = "Danach"
+    case split = "Takt teilen"
+    var id: String { rawValue }
+}
+
 private enum ArrangementAnalysisMode: String, CaseIterable, Identifiable {
     case roles = "Rollen"
     case voiceLeading = "Stimmführung"
@@ -35,6 +43,8 @@ struct TheoryWorkspaceView: View {
     @State private var chordDestination = ChordLabDestination.timelinePosition
     @State private var insertionMeasure = 0
     @State private var insertionBeat = 0
+    @State private var occupiedChordAction = OccupiedChordAction.replace
+    @State private var splitNewChordFirst = false
     @State private var sceneActionMessage: String?
     @State private var snapsToScale = true
     @State private var automaticallyPreviewsChord = true
@@ -249,12 +259,15 @@ struct TheoryWorkspaceView: View {
         .onChange(of: scoreController.selectedNotes) { _, selections in
             if let selectedMeasure = selections.first?.measure {
                 insertionMeasure = min(max(0, selectedMeasure), max(0, sceneMeasureCount - 1))
+                occupiedChordAction = .replace
                 chordDestination = .timelinePosition
             }
         }
         .onChange(of: selectedScoreMeasure) { _, selectedMeasure in
             insertionMeasure = min(max(0, selectedMeasure), max(0, sceneMeasureCount - 1))
+            occupiedChordAction = .replace
         }
+        .onChange(of: insertionBeat) { _, _ in occupiedChordAction = .replace }
         .onChange(of: pitches) { _, _ in if automaticallyPreviewsChord { previewChord() } }
         .onChange(of: automaticallyPreviewsChord) { _, enabled in if enabled { previewChord() } else { MIDIService.shared.stopChordPreview() } }
         .onAppear {
@@ -299,6 +312,28 @@ struct TheoryWorkspaceView: View {
                     Label("Die Taktauswahl rechts oben und Klicks auf Noten werden übernommen. Du kannst Takt und Zählzeit auch direkt einstellen.", systemImage: "cursorarrow.click.2")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let occupiedEvent {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Takt \(insertionMeasure + 1) ist mit \(occupiedEvent.chord.symbol) belegt", systemImage: "exclamationmark.circle.fill")
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(.orange)
+                            Picker("Belegten Takt bearbeiten", selection: $occupiedChordAction) {
+                                ForEach(OccupiedChordAction.allCases.filter { $0 != .split || canSplitOccupiedMeasure }) { Text($0.rawValue).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 520)
+                            if occupiedChordAction == .split {
+                                Picker("Reihenfolge", selection: $splitNewChordFirst) {
+                                    Text("\(occupiedEvent.chord.symbol) → \(chord.symbol)").tag(false)
+                                    Text("\(chord.symbol) → \(occupiedEvent.chord.symbol)").tag(true)
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(maxWidth: 360)
+                            }
+                        }
+                        .padding(10)
+                        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    }
                 }
                 Text(destinationExplanation).font(.caption).foregroundStyle(.secondary)
                 HStack {
@@ -315,13 +350,33 @@ struct TheoryWorkspaceView: View {
     }
 
     private var sceneMeasureCount: Int { max(1, (ABCScoreBuilder.sceneBeats(tracks: library.tracks, chords: library.chordEvents) + 3) / 4) }
+    private var insertionStartBeat: Int { insertionMeasure * 4 + insertionBeat }
+    private var occupiedEvent: ChordEvent? {
+        library.chordEvents.first { $0.startBeat <= insertionStartBeat && $0.startBeat + $0.beats > insertionStartBeat }
+    }
+    private var canSplitOccupiedMeasure: Bool {
+        guard let occupiedEvent else { return false }
+        let measureStart = insertionMeasure * 4
+        return occupiedEvent.startBeat <= measureStart && occupiedEvent.startBeat + occupiedEvent.beats >= measureStart + 4
+    }
     private var appendMeasure: Int { (library.chordEvents.map { $0.startBeat + $0.beats }.max() ?? 0) / 4 + 1 }
     private func measureNumber(for event: ChordEvent) -> Int {
         event.startBeat / 4 + 1
     }
     private var destinationExplanation: String {
         switch chordDestination {
-        case .timelinePosition: return "Der Akkord beginnt in Takt \(insertionMeasure + 1) auf Zählzeit \(insertionBeat + 1), ohne frühere Takte zu verschieben."
+        case .timelinePosition:
+            guard let occupiedEvent else { return "Der Akkord beginnt in Takt \(insertionMeasure + 1) auf Zählzeit \(insertionBeat + 1), ohne frühere Takte zu verschieben." }
+            switch occupiedChordAction {
+            case .replace:
+                return "\(occupiedEvent.chord.symbol) wird durch \(chord.symbol) ersetzt; Position und Dauer bleiben erhalten."
+            case .before:
+                return "\(chord.symbol) wird vor \(occupiedEvent.chord.symbol) eingefügt. Der vorhandene Akkord und alle folgenden Akkorde rücken um einen Takt nach rechts."
+            case .after:
+                return "\(chord.symbol) wird nach dem vollständigen \(occupiedEvent.chord.symbol)-Abschnitt eingefügt. Alle folgenden Akkorde rücken um einen Takt nach rechts."
+            case .split:
+                return "Takt \(insertionMeasure + 1) wird halbiert: \(splitNewChordFirst ? chord.symbol : occupiedEvent.chord.symbol) auf Zählzeit 1–2, \(splitNewChordFirst ? occupiedEvent.chord.symbol : chord.symbol) auf Zählzeit 3–4."
+            }
         case .append: return "Der Akkord wird nach der vorhandenen Folge eingefügt und beginnt ab Takt \(appendMeasure)."
         case let .insertBefore(id):
             guard let event = library.chordEvents.first(where: { $0.id == id }) else { return "Wähle eine gültige Einfügeposition." }
@@ -332,17 +387,33 @@ struct TheoryWorkspaceView: View {
         }
     }
     private var destinationButtonTitle: String {
-        switch chordDestination { case .timelinePosition: return "In Takt \(insertionMeasure + 1) einsetzen"; case .append: return "Am Ende einfügen"; case .insertBefore: return "An Position einfügen"; case .replace: return "Akkord ersetzen" }
+        switch chordDestination {
+        case .timelinePosition:
+            guard let occupiedEvent else { return "In Takt \(insertionMeasure + 1) einsetzen" }
+            switch occupiedChordAction {
+            case .replace: return "\(occupiedEvent.chord.symbol) durch \(chord.symbol) ersetzen"
+            case .before: return "\(chord.symbol) vor \(occupiedEvent.chord.symbol) einfügen"
+            case .after: return "\(chord.symbol) nach \(occupiedEvent.chord.symbol) einfügen"
+            case .split: return "Takt \(insertionMeasure + 1) teilen"
+            }
+        case .append: return "Am Ende einfügen"
+        case .insertBefore: return "An Position einfügen"
+        case .replace: return "Akkord ersetzen"
+        }
     }
     private var destinationButtonIcon: String {
         if case .replace = chordDestination { return "arrow.triangle.2.circlepath" }
+        if chordDestination == .timelinePosition, occupiedEvent != nil {
+            return occupiedChordAction == .split ? "rectangle.split.2x1" : occupiedChordAction == .replace ? "arrow.triangle.2.circlepath" : "plus"
+        }
         return "plus"
     }
     private func applyChordToScene() {
         switch chordDestination {
         case .timelinePosition:
-            let startBeat = insertionMeasure * 4 + insertionBeat
-            if library.addChord(chord, atBeat: startBeat) {
+            if let occupiedEvent {
+                applyChord(chord, toOccupied: occupiedEvent)
+            } else if library.addChord(chord, atBeat: insertionStartBeat) {
                 sceneActionMessage = "\(chord.symbol) beginnt in Takt \(insertionMeasure + 1) auf Zählzeit \(insertionBeat + 1)."
             }
         case .append:
@@ -351,12 +422,31 @@ struct TheoryWorkspaceView: View {
             sceneActionMessage = "\(chord.symbol) wurde ab Takt \(measure) angefügt."
         case let .insertBefore(id):
             let measure = library.chordEvents.first(where: { $0.id == id }).map(measureNumber) ?? 1
-            library.insertChord(chord, before: id)
-            sceneActionMessage = "\(chord.symbol) wurde in Takt \(measure) eingefügt."
+            if library.insertChord(chord, before: id) { sceneActionMessage = "\(chord.symbol) wurde in Takt \(measure) eingefügt." }
         case let .replace(id):
             let measure = library.chordEvents.first(where: { $0.id == id }).map(measureNumber) ?? 1
-            library.replaceChord(id: id, with: chord)
-            sceneActionMessage = "Akkord in Takt \(measure) wurde durch \(chord.symbol) ersetzt."
+            if library.replaceChord(id: id, with: chord) { sceneActionMessage = "Akkord in Takt \(measure) wurde durch \(chord.symbol) ersetzt." }
+        }
+    }
+
+    private func applyChord(_ chord: TheoryChord, toOccupied event: ChordEvent) {
+        switch occupiedChordAction {
+        case .replace:
+            if library.replaceChord(id: event.id, with: chord) {
+                sceneActionMessage = "\(event.chord.symbol) wurde in Takt \(insertionMeasure + 1) durch \(chord.symbol) ersetzt."
+            }
+        case .before:
+            if library.insertChord(chord, before: event.id) {
+                sceneActionMessage = "\(chord.symbol) wurde vor \(event.chord.symbol) eingefügt."
+            }
+        case .after:
+            if library.insertChord(chord, after: event.id) {
+                sceneActionMessage = "\(chord.symbol) wurde nach \(event.chord.symbol) eingefügt."
+            }
+        case .split:
+            if library.splitChordMeasure(eventID: event.id, measureStartBeat: insertionMeasure * 4, with: chord, newChordFirst: splitNewChordFirst) {
+                sceneActionMessage = "Takt \(insertionMeasure + 1) enthält jetzt \(splitNewChordFirst ? chord.symbol : event.chord.symbol) und \(splitNewChordFirst ? event.chord.symbol : chord.symbol)."
+            }
         }
     }
 

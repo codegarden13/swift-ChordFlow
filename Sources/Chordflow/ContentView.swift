@@ -82,7 +82,7 @@ struct ContentView: View {
                 library.addTimelineScore(title: title, startYear: startYear, endYear: endYear)
             }
         }
-        .alert("Datenbankfehler", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
+        .alert("Aktion nicht möglich", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
             Button("OK", role: .cancel) { library.errorMessage = nil }
         } message: { Text(library.errorMessage ?? "Unbekannter Fehler") }
     }
